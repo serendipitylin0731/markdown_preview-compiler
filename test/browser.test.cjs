@@ -19,7 +19,13 @@ test.before(async () => {
         window.acquireVsCodeApi=()=>({postMessage:m=>window.__MDC_MESSAGES__.push(m),getState:()=>null,setState:()=>{}});
         window.__MDC_BOOT__={mode:new URLSearchParams(location.search).get('mode')||'visual',directory:location.origin,
           templateUrls:{simple:location.origin+'/assets/templates/simple.svg',academic:location.origin+'/assets/templates/academic.svg',
-            technical:location.origin+'/assets/templates/technical.svg',cover:location.origin+'/assets/templates/cover.svg'}};
+            technical:location.origin+'/assets/templates/technical.svg',cover:location.origin+'/assets/templates/cover.svg',
+            'sjtu-red':location.origin+'/assets/templates/sjtu-red.svg', 'sjtu-blue':location.origin+'/assets/templates/sjtu-blue.svg',
+            'sjtu-red-cover':location.origin+'/assets/templates/sjtu-red-cover.svg',
+            'sjtu-blue-cover':location.origin+'/assets/templates/sjtu-blue-cover.svg',
+            'sjtu-red-outline':location.origin+'/assets/templates/sjtu-red-outline.svg',
+            'sjtu-blue-outline':location.origin+'/assets/templates/sjtu-blue-outline.svg',
+            'sjtu-wordmark':location.origin+'/assets/templates/sjtu-wordmark.png'}};
         </script><script src="/webview.js"></script></body></html>`);
       return;
     }
@@ -31,6 +37,7 @@ test.before(async () => {
     if (file.endsWith('.mjs')) res.setHeader('Content-Type', 'text/javascript');
     if (file.endsWith('.css')) res.setHeader('Content-Type', 'text/css');
     if (file.endsWith('.svg')) res.setHeader('Content-Type', 'image/svg+xml');
+    if (file.endsWith('.png')) res.setHeader('Content-Type', 'image/png');
     if (file.endsWith('.woff2')) res.setHeader('Content-Type', 'font/woff2');
     if (file.endsWith('.woff')) res.setHeader('Content-Type', 'font/woff');
     res.end(fs.readFileSync(file));
@@ -541,6 +548,87 @@ test('cover fields and Ctrl wheel PDF zoom use the saved layout', async () => {
   assert.equal(await page.locator('button[data-action=fitWidth]').count(), 0);
   await page.locator('#pdfPages').dispatchEvent('wheel', { ctrlKey: true, deltaY: -100 });
   await page.waitForFunction(() => document.getElementById('zoomLabel')?.textContent === '110%');
+  await page.close();
+});
+
+test('margin and draggable cover previews follow the selected template and landscape paper', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '# 交大报告\n\n正文\n', version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
+  await page.locator('button[data-action=settings]').click();
+  assert.equal(await page.locator('input[name=template]').count(), 5);
+  await page.locator('input[name=template][value=sjtu-red]').check();
+  assert.match(await page.locator('#marginSheet').evaluate(el => el.style.backgroundImage), /sjtu-red\.svg/);
+  assert.match(await page.locator('#coverSheet').evaluate(el => el.style.backgroundImage), /sjtu-red-cover\.svg/);
+  await page.locator('input[name=template][value=sjtu-blue]').check();
+  await page.locator('#set-orientation').selectOption('landscape');
+  const sheets = await page.evaluate(() => {
+    const margin = document.getElementById('marginSheet');
+    const cover = document.getElementById('coverSheet');
+    const number = document.getElementById('marginPageNumber');
+    return { margin: margin.getBoundingClientRect().width, cover: cover.getBoundingClientRect().width,
+      marginBackground: margin.style.backgroundImage, coverBackground: cover.style.backgroundImage,
+      numberRight: parseFloat(number.style.right), numberBottom: parseFloat(number.style.bottom) };
+  });
+  assert.ok(sheets.margin > 230 && sheets.cover > 330);
+  assert.match(sheets.marginBackground, /sjtu-blue\.svg/);
+  assert.match(sheets.coverBackground, /sjtu-blue-cover\.svg/);
+  assert.match(await page.locator('#marginSheet .template-outline').getAttribute('src'), /sjtu-blue-outline\.svg/);
+  assert.match(await page.locator('#coverSheet .template-outline').getAttribute('src'), /sjtu-blue-outline\.svg/);
+  assert.ok(Math.abs(sheets.numberRight - 10 / 297 * 100) < .1);
+  assert.ok(Math.abs(sheets.numberBottom - 7 / 210 * 100) < .1);
+  const title = page.locator('[data-cover-field=title]');
+  await title.scrollIntoViewIfNeeded();
+  const before = await title.boundingBox();
+  await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(before.x + before.width / 2 + 35, before.y + before.height / 2 + 20, { steps: 5 });
+  await page.mouse.up();
+  await page.locator('button[data-action=saveSettings]').click();
+  const saved = await page.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'saveSettings')?.value);
+  assert.equal(saved.template, 'sjtu-blue');
+  assert.equal(saved.orientation, 'landscape');
+  assert.ok(saved.coverPositions.title[0] > 50 && saved.coverPositions.title[1] > 36);
+  await page.close();
+});
+
+test('landscape Shanghai Jiao Tong pages keep the page number below the template footer', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '# 交大报告\n\n正文\n', version: 1, settings: {}, templates: [],
+    exportSettings: { orientation: 'landscape', template: 'sjtu-red', cover: true } });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const layout = await page.evaluate(() => {
+    const pages = [...document.querySelectorAll('#printHost .print-page')];
+    const body = pages[1], number = body.querySelector('.print-page-number');
+    const coverRect = pages[0].getBoundingClientRect(), dateRect = pages[0].querySelector('.cover-date').getBoundingClientRect();
+    const coverOutline = pages[0].querySelector('.template-outline').getBoundingClientRect();
+    const bodyRect = body.getBoundingClientRect(), numberRect = number.getBoundingClientRect();
+    const bodyOutline = body.querySelector('.template-outline').getBoundingClientRect();
+    return { count: pages.length, coverBackground: pages[0].style.backgroundImage, bodyBackground: body.style.backgroundImage,
+      width: bodyRect.width, height: bodyRect.height,
+      right: bodyRect.right - numberRect.right, bottom: bodyRect.bottom - numberRect.bottom,
+      dateBottom: dateRect.bottom, coverOutlineTop: coverOutline.top,
+      coverOutlineRatio: coverOutline.width / coverOutline.height,
+      outlineRight: bodyRect.right - bodyOutline.right,
+      outlineBaseline: (bodyOutline.top + bodyOutline.height * 77 / 90 - bodyRect.top) / bodyRect.height };
+  });
+  assert.ok(layout.count >= 2);
+  assert.match(layout.coverBackground, /sjtu-red-cover\.svg/);
+  assert.match(layout.bodyBackground, /sjtu-red\.svg/);
+  assert.ok(layout.width > layout.height);
+  assert.ok(Math.abs(layout.right - 10 * 96 / 25.4) < 2);
+  assert.ok(Math.abs(layout.bottom - 7 * 96 / 25.4) < 2);
+  assert.ok(layout.dateBottom < layout.coverOutlineTop, 'cover date should stay above the complete outline');
+  assert.ok(Math.abs(layout.coverOutlineRatio - 6) < .05, 'the outline should keep its aspect ratio');
+  assert.ok(Math.abs(layout.outlineRight / layout.width - .075) < .01);
+  assert.ok(Math.abs(layout.outlineBaseline - 1290 / 1400) < .005);
+  if (process.env.MDC_SCREENSHOT) {
+    await page.locator('#pdfPages canvas').first().screenshot({ path: process.env.MDC_SCREENSHOT + '-cover.png' });
+    await page.locator('#pdfPages canvas').nth(1).screenshot({ path: process.env.MDC_SCREENSHOT + '-body.png' });
+  }
   await page.close();
 });
 

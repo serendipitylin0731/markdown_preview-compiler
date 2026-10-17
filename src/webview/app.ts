@@ -138,6 +138,7 @@ let lastScrollLine = 0;
 let suppressScrollUntil = 0;
 let lastSentScrollLine = -1;
 let marginDraft: any = null;
+let coverDraft: Record<string, [number, number]> | null = null;
 let fonts: any[] = [];
 let fontsReady: Promise<void> = Promise.resolve();
 let activeBlock = -1;
@@ -362,6 +363,7 @@ function onFocus(event: FocusEvent) {
 }
 function onInput(event: Event) {
   const target = event.target as HTMLElement;
+  if (target.id === 'set-coverSubtitle' || target.id === 'set-coverAuthor') updateCoverSheet();
   const block = target.closest('.md-block') as HTMLElement | null;
   if (block && target.closest('.block-content')) {
     if (target.matches('.direct-inline-math')) {
@@ -664,6 +666,30 @@ function paperSizeFor(paper: string, orientation: string): [number, number] {
   const size = sizes[paper] || sizes.a4;
   return orientation === 'landscape' ? [size[1], size[0]] : size;
 }
+function selectedTemplate() {
+  return (document.querySelector('input[name=template]:checked') as HTMLInputElement | null)?.value || exportSettings.template;
+}
+function setTemplateArtwork(element: HTMLElement, templateId: string, cover = false) {
+  const background = cover ? coverBackground(templateId) : templateBackground(templateId);
+  const sjtu = templateId === 'sjtu-red' || templateId === 'sjtu-blue';
+  const logo = boot.templateUrls?.['sjtu-wordmark'];
+  element.style.backgroundImage = sjtu && logo ? `url("${logo}"), url("${background}")` : `url("${background}")`;
+  element.style.backgroundSize = sjtu && logo ? `auto ${cover ? '7%' : '5%'}, 100% 100%` : '100% 100%';
+  element.style.backgroundPosition = sjtu && logo ? `5% ${cover ? '5%' : '2.5%'}, center` : 'center';
+  element.style.backgroundRepeat = 'no-repeat';
+  const outlineUrl = sjtu ? boot.templateUrls?.[`${templateId}-outline`] : undefined;
+  let outline = element.querySelector<HTMLImageElement>(':scope > .template-outline');
+  if (outlineUrl) {
+    if (!outline) {
+      outline = document.createElement('img');
+      outline.className = 'template-outline';
+      outline.alt = '';
+      element.prepend(outline);
+    }
+    outline.src = outlineUrl;
+    outline.style.bottom = cover ? '6%' : '6.7%';
+  } else outline?.remove();
+}
 function updateMarginSheet() {
   const sheet = document.getElementById('marginSheet') as HTMLElement | null;
   const selection = document.getElementById('marginSelection') as HTMLElement | null;
@@ -671,14 +697,72 @@ function updateMarginSheet() {
   const [width, height] = paperSizeFor((document.getElementById('set-paper') as HTMLSelectElement).value,
     (document.getElementById('set-orientation') as HTMLSelectElement).value);
   sheet.style.width = `${230 * width / height}px`;
+  setTemplateArtwork(sheet, selectedTemplate());
   selection.style.left = `${marginDraft.marginLeft / width * 100}%`;
   selection.style.right = `${marginDraft.marginRight / width * 100}%`;
   selection.style.top = `${marginDraft.marginTop / height * 100}%`;
   selection.style.bottom = `${marginDraft.marginBottom / height * 100}%`;
+  const number = document.getElementById('marginPageNumber') as HTMLElement;
+  number.style.display = (document.getElementById('set-pageNumbers') as HTMLInputElement).checked ? '' : 'none';
+  number.style.right = `${10 / width * 100}%`;
+  number.style.bottom = `${7 / height * 100}%`;
   document.getElementById('marginText')!.textContent = `正文区域：上 ${Math.round(marginDraft.marginTop)}、右 ${Math.round(marginDraft.marginRight)}、下 ${Math.round(marginDraft.marginBottom)}、左 ${Math.round(marginDraft.marginLeft)} mm`;
   for (const key of ['marginTop', 'marginRight', 'marginBottom', 'marginLeft']) {
     const field = document.getElementById('set-' + key) as HTMLInputElement | null;
     if (field) field.value = String(marginDraft[key]);
+  }
+}
+function updateCoverSheet() {
+  const sheet = document.getElementById('coverSheet') as HTMLElement | null;
+  if (!sheet || !coverDraft) return;
+  const [width, height] = paperSizeFor((document.getElementById('set-paper') as HTMLSelectElement).value,
+    (document.getElementById('set-orientation') as HTMLSelectElement).value);
+  sheet.style.width = `${330 * width / height}px`;
+  setTemplateArtwork(sheet, selectedTemplate(), true);
+  const values: Record<string, string> = {
+    title: blocks.find(block => /^#\s+/.test(block.raw))?.raw.replace(/^#\s+/, '').trim() || '文档标题',
+    subtitle: (document.getElementById('set-coverSubtitle') as HTMLInputElement).value || '副标题',
+    author: (document.getElementById('set-coverAuthor') as HTMLInputElement).value || '作者',
+    date: new Date().toLocaleDateString('zh-CN')
+  };
+  for (const key of ['title', 'subtitle', 'author', 'date']) {
+    const field = sheet.querySelector<HTMLElement>(`[data-cover-field="${key}"]`)!;
+    field.style.left = `${coverDraft[key][0]}%`;
+    field.style.top = `${coverDraft[key][1]}%`;
+    field.querySelector('.cover-drag-value')!.textContent = values[key];
+    field.classList.toggle('inactive', key === 'date' && !(document.getElementById('set-coverDate') as HTMLInputElement).checked);
+  }
+}
+function bindCoverSheet() {
+  const sheet = document.getElementById('coverSheet') as HTMLElement;
+  let drag: { key: string; x: number; y: number; position: [number, number] } | null = null;
+  for (const field of sheet.querySelectorAll<HTMLElement>('[data-cover-field]')) {
+    field.addEventListener('pointerdown', event => {
+      const key = field.dataset.coverField!;
+      drag = { key, x: event.clientX, y: event.clientY, position: [...coverDraft![key]] as [number, number] };
+      field.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    field.addEventListener('pointermove', event => {
+      if (!drag || drag.key !== field.dataset.coverField) return;
+      const rect = sheet.getBoundingClientRect();
+      coverDraft![drag.key] = [
+        Math.max(0, Math.min(100, Math.round(drag.position[0] + (event.clientX - drag.x) / rect.width * 100))),
+        Math.max(0, Math.min(100, Math.round(drag.position[1] + (event.clientY - drag.y) / rect.height * 100)))
+      ];
+      updateCoverSheet();
+    });
+    field.addEventListener('pointerup', () => { drag = null; });
+    field.addEventListener('pointercancel', () => { drag = null; });
+    field.addEventListener('keydown', event => {
+      const offsets: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+      const delta = offsets[event.key];
+      if (!delta) return;
+      const key = field.dataset.coverField!;
+      const step = event.shiftKey ? 5 : 1;
+      coverDraft![key] = coverDraft![key].map((value, index) => Math.max(0, Math.min(100, value + delta[index] * step))) as [number, number];
+      updateCoverSheet(); event.preventDefault();
+    });
   }
 }
 function bindMarginSheet() {
@@ -716,11 +800,12 @@ function bindMarginSheet() {
 }
 function settingsDialog() {
   marginDraft = Object.fromEntries(['marginTop','marginRight','marginBottom','marginLeft'].map(key => [key, exportSettings[key]]));
+  coverDraft = Object.fromEntries(['title', 'subtitle', 'author', 'date'].map(key => [key, [...(exportSettings.coverPositions?.[key] || [50, 50])]])) as Record<string, [number, number]>;
   showDialog('PDF 排版设置', `<div class="setting-grid">
     <div class="template-settings"><strong>模板</strong><div class="template-list">${templateOptions()}</div><button data-action="importTemplate">导入图片模板</button><p>选择正文图片，可再选一张封面图片。应用模板后可在文档预览中框选文字，将模板用于该范围。</p></div>
     <label>纸张<select id="set-paper"><option value="a4">A4</option><option value="a5">A5</option><option value="letter">Letter</option></select></label>
     <label>方向<select id="set-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
-    <div class="margin-editor"><strong>页边距</strong><p>点击确定左上角，右下角自动对称；拖动可调整，靠近对称位置时自动吸附</p><div id="marginSheet" class="margin-sheet" role="img" aria-label="点击或拖动调整 PDF 正文区域"><div id="marginSelection" class="margin-selection"></div></div><p id="marginText"></p>
+    <div class="margin-editor"><strong>页边距</strong><p>点击确定左上角，右下角自动对称；拖动可调整，靠近对称位置时自动吸附</p><div id="marginSheet" class="margin-sheet" role="img" aria-label="点击或拖动调整 PDF 正文区域"><div id="marginSelection" class="margin-selection"></div><span id="marginPageNumber" class="margin-page-number">1 / 3</span></div><p id="marginText"></p>
       <div class="margin-inputs"><label>上 mm<input id="set-marginTop" type="number" min="0" max="60" step="1"></label><label>右 mm<input id="set-marginRight" type="number" min="0" max="60" step="1"></label><label>下 mm<input id="set-marginBottom" type="number" min="18" max="60" step="1"></label><label>左 mm<input id="set-marginLeft" type="number" min="0" max="60" step="1"></label></div><p>页码固定在右下角；底边距至少 18 mm，避免碰到正文。</p></div>
     ${settingField('fontSize','正文字号 pt','number','6')}${settingField('lineHeight','行距','number','1')}
     ${settingField('paragraphGap','段落间距 px','number','0')}${settingField('firstLineIndent','首行缩进 em','number','0')}
@@ -736,25 +821,36 @@ function settingsDialog() {
     <label><input id="set-cover" type="checkbox" ${exportSettings.cover ? 'checked' : ''}>封面页</label>
     ${settingField('coverSubtitle','封面副标题')}${settingField('coverAuthor','封面作者')}
     <label><input id="set-coverDate" type="checkbox" ${exportSettings.coverDate !== false ? 'checked' : ''}>显示封面日期</label>
-    <div class="cover-position-settings"><strong>封面文字位置（页面百分比）</strong><p>横向和纵向分别以左上角为 0、右下角为 100。</p>${['title','subtitle','author','date'].map((key, i) => `<div class="position-row"><span>${['标题','副标题','作者','日期'][i]}</span><label>横向<input id="pos-${key}-x" type="number" min="0" max="100" value="${esc(exportSettings.coverPositions?.[key]?.[0] ?? 50)}"></label><label>纵向<input id="pos-${key}-y" type="number" min="0" max="100" value="${esc(exportSettings.coverPositions?.[key]?.[1] ?? 50)}"></label></div>`).join('')}</div>
+    <div class="cover-position-settings"><strong>封面文字位置</strong><p>在封面模板上拖动文字；选中文字后也可用方向键微调，按 Shift 每次移动 5%。</p><div id="coverSheet" class="cover-sheet" aria-label="拖动调整封面文字位置">${['title','subtitle','author','date'].map((key, i) => `<div class="cover-drag-field ${key}" data-cover-field="${key}" role="button" tabindex="0" aria-label="拖动${['标题','副标题','作者','日期'][i]}"><span class="cover-drag-label">${['标题','副标题','作者','日期'][i]}</span><span class="cover-drag-value"></span></div>`).join('')}</div></div>
     <label><input id="set-toc" type="checkbox" ${exportSettings.toc ? 'checked' : ''}>自动目录</label>
     </div><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="saveSettings" class="primary">应用</button></div>`);
   for (const key of ['paper','orientation','align','pageNumberFormat']) (document.getElementById('set-' + key) as HTMLSelectElement).value = exportSettings[key];
-  updateMarginSheet(); bindMarginSheet();
+  updateMarginSheet(); bindMarginSheet(); updateCoverSheet(); bindCoverSheet();
 }
 function templateOptions() {
   const all = [
-    { id: 'simple', name: '简洁文档' }, { id: 'academic', name: '学术报告' }, { id: 'technical', name: '技术文档' }, ...templates
+    { id: 'simple', name: '简洁文档' }, { id: 'academic', name: '学术报告' }, { id: 'technical', name: '技术文档' },
+    { id: 'sjtu-red', name: '上海交大 · 红' }, { id: 'sjtu-blue', name: '上海交大 · 蓝' }, ...templates
   ];
-  return all.map(t => `<label class="template-option">
+  return all.map(t => {
+    const background = t.url || templateBackground(t.id);
+    const branded = (t.id === 'sjtu-red' || t.id === 'sjtu-blue') && boot.templateUrls?.['sjtu-wordmark'];
+    const style = branded
+      ? `background-image:url(${JSON.stringify(boot.templateUrls['sjtu-wordmark'])}),url(${JSON.stringify(background)});background-size:auto 5%,100% 100%;background-position:5% 2.5%,center;background-repeat:no-repeat`
+      : `background-image:url(${JSON.stringify(background)})`;
+    return `<label class="template-option">
     <input type="radio" name="template" value="${esc(t.id)}" ${exportSettings.template === t.id ? 'checked' : ''}>
-    <span class="template-thumb ${esc(t.id)}" ${t.url ? `style="background-image:url('${esc(t.url)}')"` : ''}></span>
+    <span class="template-thumb ${esc(t.id)}" style="${esc(style)}">${branded && boot.templateUrls?.[`${t.id}-outline`] ? `<img class="template-thumb-outline" src="${esc(boot.templateUrls[`${t.id}-outline`])}" alt="">` : ''}</span>
     <span>${esc(t.name)}</span>${t.url ? `<button data-action="exportTemplate" data-id="${esc(t.id)}">导出正文</button>` : ''}
-  </label>`).join('');
+  </label>`;
+  }).join('');
 }
 function onChange(event: Event) {
   const target = event.target as HTMLInputElement;
-  if (target.id === 'set-paper' || target.id === 'set-orientation') updateMarginSheet();
+  if (target.id === 'set-paper' || target.id === 'set-orientation' || target.name === 'template' || target.id === 'set-pageNumbers') {
+    updateMarginSheet(); updateCoverSheet();
+  }
+  if (['set-coverDate', 'set-coverSubtitle', 'set-coverAuthor'].includes(target.id)) updateCoverSheet();
   const marginKey = target.id.replace(/^set-/, '');
   if (marginDraft && ['marginTop','marginRight','marginBottom','marginLeft'].includes(marginKey)) {
     const minimum = marginKey === 'marginBottom' ? 18 : 0;
@@ -834,10 +930,8 @@ function onClick(event: MouseEvent) {
     Object.assign(exportSettings, marginDraft);
     for (const key of ['fontSize','lineHeight','paragraphGap','firstLineIndent','headingScale','headingGap']) exportSettings[key] = Number((document.getElementById('set-' + key) as HTMLInputElement).value);
     for (const key of ['pageNumbers','cover','coverDate','toc']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).checked;
-    exportSettings.coverPositions = Object.fromEntries(['title','subtitle','author','date'].map(key => [key, ['x','y'].map(axis => {
-      const value = Number((document.getElementById(`pos-${key}-${axis}`) as HTMLInputElement).value);
-      return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 50;
-    })]));
+    exportSettings.coverPositions = Object.fromEntries(['title','subtitle','author','date'].map(key => [key,
+      coverDraft![key].map(value => Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 50)]));
     normalizeExportSettings();
     pdfDirty = true; post('saveSettings', { value: exportSettings }); closeDialog(); schedulePdf();
     if (templateBrush) toast('模板已选中；在文档预览中框选正文，即可将模板应用到该范围。');
@@ -1004,9 +1098,10 @@ function templateBackground(templateId = exportSettings.template) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">${variants[templateId] || variants.simple}</svg>`;
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
-function coverBackground() {
-  const custom = templates.find(t => t.id === exportSettings.template);
-  if (custom?.coverUrl) return custom.coverUrl;
+function coverBackground(templateId = exportSettings.template) {
+  const custom = templates.find(t => t.id === templateId);
+  if (custom?.coverUrl || custom?.url) return custom.coverUrl || custom.url;
+  if (boot.templateUrls?.[`${templateId}-cover`]) return boot.templateUrls[`${templateId}-cover`];
   if (boot.templateUrls?.cover) return boot.templateUrls.cover;
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400"><rect width="100%" height="100%" fill="#fdfbf7"/><path d="M90 260H910M90 1100H910" stroke="#315577" stroke-width="5"/><rect x="90" y="270" width="72" height="8" fill="#315577"/></svg>';
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
@@ -1015,9 +1110,9 @@ function makePage(number: number, total = 0, cover = false, templateId = exportS
   const [width, height] = paperSize();
   const page = document.createElement('div');
   page.className = 'print-page' + (cover ? ' cover-page' : '');
+  if (templateId === 'sjtu-red' || templateId === 'sjtu-blue') page.classList.add(templateId);
   page.style.width = `${mmToPx(width)}px`;
   page.style.height = `${mmToPx(height)}px`;
-  page.style.backgroundImage = `url("${cover ? coverBackground() : templateBackground(templateId)}")`;
   page.style.setProperty('--margin-top', `${mmToPx(exportSettings.marginTop)}px`);
   page.style.setProperty('--margin-right', `${mmToPx(exportSettings.marginRight)}px`);
   page.style.setProperty('--margin-bottom', `${mmToPx(exportSettings.marginBottom)}px`);
@@ -1039,6 +1134,7 @@ function makePage(number: number, total = 0, cover = false, templateId = exportS
     <div class="print-content markdown-body"></div>
     <div class="print-footer">${esc(exportSettings.footer || '')}</div>
     <div class="print-page-number">${exportSettings.pageNumbers ? number : ''}</div>`;
+  setTemplateArtwork(page, templateId, cover);
   return page;
 }
 function makePrintBlock(block: Block): HTMLElement {
@@ -1118,7 +1214,7 @@ async function paginate() {
     if (desiredTemplate !== currentTemplate) {
       currentTemplate = desiredTemplate;
       if (content.children.length) nextPage(block.line);
-      else page.style.backgroundImage = `url("${templateBackground(currentTemplate)}")`;
+      else setTemplateArtwork(page, currentTemplate);
     }
     if (/^\s*<!--\s*pagebreak\s*-->\s*$/i.test(block.raw)) {
       nextPage(blocks[blockIndex + 1]?.line ?? block.line, 'manual'); continue;
@@ -1295,6 +1391,7 @@ async function generatePdf() {
     await fontsReady;
     await document.fonts.ready;
     const pages = await paginate();
+    await waitImages(document.getElementById('printHost')!);
     const [width, height] = paperSize();
     const pdf = new jsPDF({ orientation: exportSettings.orientation, unit: 'mm', format: [width, height], compress: true });
     const previewImages: string[] = [];
@@ -1480,6 +1577,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         if (selected) selected.checked = true;
         if (templates.find(t => t.id === message.importedId)?.coverUrl) (document.getElementById('set-cover') as HTMLInputElement).checked = true;
       }
+      updateMarginSheet(); updateCoverSheet();
     }
   } else if (message.type === 'fonts') {
     setFonts(message.fonts || [], message.importedId);

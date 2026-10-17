@@ -55,8 +55,8 @@ function webviewHtml(webview: vscode.Webview, document: vscode.TextDocument, mod
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'dist', 'katex.min.css'));
   const appCss = webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'dist', 'webview.css'));
   const directory = webview.asWebviewUri(vscode.Uri.joinPath(document.uri, '..')).toString();
-  const templateUrls = Object.fromEntries(['simple', 'academic', 'technical', 'cover'].map(name =>
-    [name, webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'assets', 'templates', `${name}.svg`)).toString()]));
+  const templateUrls = Object.fromEntries(['simple', 'academic', 'technical', 'cover', 'sjtu-red', 'sjtu-blue', 'sjtu-red-cover', 'sjtu-blue-cover', 'sjtu-red-outline', 'sjtu-blue-outline', 'sjtu-wordmark'].map(name =>
+    [name, webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'assets', 'templates', `${name}.${name === 'sjtu-wordmark' ? 'png' : 'svg'}`)).toString()]));
   const boot = JSON.stringify({ mode, directory, templateUrls }).replace(/</g, '\\u003c');
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
