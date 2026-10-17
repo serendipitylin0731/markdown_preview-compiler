@@ -11,8 +11,10 @@ test.before(async () => {
   server = http.createServer((req, res) => {
     if (new URL(req.url, 'http://127.0.0.1').pathname === '/') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end(`<!doctype html><html><head><link rel="stylesheet" href="/katex.min.css"><link rel="stylesheet" href="/webview.css"></head><body>
-        <div id="app"></div><script>
+      res.end(`<!doctype html><html><head>
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src http: data: blob:; font-src http: data:; style-src http: 'unsafe-inline'; script-src http: 'nonce-mdctest' blob:; worker-src http: blob:; connect-src http: data: blob:;">
+        <link rel="stylesheet" href="/katex.min.css"><link rel="stylesheet" href="/webview.css"></head><body>
+        <div id="app"></div><script nonce="mdctest">
         window.__MDC_MESSAGES__=[];
         window.acquireVsCodeApi=()=>({postMessage:m=>window.__MDC_MESSAGES__.push(m),getState:()=>null,setState:()=>{}});
         window.__MDC_BOOT__={mode:new URLSearchParams(location.search).get('mode')||'visual',worker:location.origin+'/pdf.worker.min.mjs',directory:location.origin,

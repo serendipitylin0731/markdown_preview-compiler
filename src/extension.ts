@@ -222,6 +222,21 @@ export function activate(context: vscode.ExtensionContext) {
   boundaryDecoration = vscode.window.createTextEditorDecorationType({});
   context.subscriptions.push(
     boundaryDecoration,
+    vscode.commands.registerCommand('markdownCompiler.openPreferred', async () => {
+      const document = await currentDocument();
+      if (!document) return;
+      const preferred = context.globalState.get<string>('lastMode', 'split');
+      if (preferred === 'visual') {
+        for (const state of [...panels]) if (state.uri.toString() === document.uri.toString() && state.mode !== 'visual') state.panel.dispose();
+        await openPanel(document, 'visual', vscode.ViewColumn.One);
+      }
+      else if (preferred === 'pdf') await showPdf(document);
+      else if (preferred === 'source') {
+        for (const state of [...panels]) if (state.uri.toString() === document.uri.toString()) state.panel.dispose();
+        await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One });
+      }
+      else await showSplit(document);
+    }),
     vscode.commands.registerCommand('markdownCompiler.source', async () => {
       const document = await currentDocument(); if (document) {
         for (const state of [...panels]) if (state.uri.toString() === document.uri.toString()) state.panel.dispose();

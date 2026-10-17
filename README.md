@@ -21,13 +21,14 @@ npm run package
 
 | 命令 | 效果 |
 | --- | --- |
+| `Markdown Compiler: 打开上次使用的模式` | 按上次选择的工作模式打开当前文件 |
 | `Markdown Compiler: 源码编辑` | 返回 VS Code 原生 Markdown 编辑器 |
 | `Markdown Compiler: 分屏预览` | 左侧源码，右侧只读预览 |
 | `Markdown Compiler: 所见即所得编辑` | 直接编辑渲染后的段落、标题、列表和表格 |
 | `Markdown Compiler: PDF 对照预览` | 边编辑边查看实际生成的 PDF |
 | `Markdown Compiler: 导出 PDF` | 预览并选择 PDF 保存位置 |
 
-常用快捷键：`Ctrl+Alt+M` 分屏、`Ctrl+Alt+V` 所见即所得、`Ctrl+Alt+P` PDF；macOS 使用 `Cmd` 代替 `Ctrl`。所见即所得模式内可用 `Ctrl/Cmd+B`、`Ctrl/Cmd+I` 和 Tab / Shift+Tab。
+常用快捷键：`Ctrl+Alt+E` 打开上次模式、`Ctrl+Alt+M` 分屏、`Ctrl+Alt+V` 所见即所得、`Ctrl+Alt+P` PDF；macOS 使用 `Cmd` 代替 `Ctrl`。所见即所得模式内可用 `Ctrl/Cmd+B`、`Ctrl/Cmd+I` 和 Tab / Shift+Tab。
 
 可在所见即所得工具栏插入链接、图片、表格、代码、公式、Mermaid 图表和手动分页符。复杂代码块、公式、图表及 HTML 区块提供对应源码编辑入口，避免可视化编辑时破坏原始内容。编辑以块为单位写回 VS Code 的 `TextDocument`；文件的未保存状态、保存和撤销由 VS Code 管理。
 
