@@ -154,6 +154,18 @@ test('task checkbox is editable only in visual mode', async () => {
   await preview.close();
 });
 
+test('split preview offers mode switching inside the preview pane', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  assert.ok(await page.locator('button[data-action=split]').evaluate(button => button.classList.contains('selected')));
+  await page.locator('button[data-action=visual]').click();
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'visual'));
+  assert.ok(await page.locator('button[data-action=pdf]').isVisible());
+  assert.ok(await page.locator('button[data-action=source]').isVisible());
+  await page.close();
+});
+
 test('visual link and image dialogs write safe Markdown targets', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=visual');

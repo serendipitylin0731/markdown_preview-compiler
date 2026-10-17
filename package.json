@@ -2,7 +2,7 @@
   "name": "markdown-preview-compiler",
   "displayName": "Markdown Preview & Compiler",
   "description": "Markdown source, visual editing, live PDF preview and export.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "serendpity-lin",
   "repository": {
     "type": "git",
@@ -38,7 +38,11 @@
       },
       {
         "command": "markdownCompiler.split",
-        "title": "Markdown Compiler: 分屏预览"
+        "title": "Markdown Compiler: 分屏预览",
+        "icon": {
+          "light": "assets/icon-light.svg",
+          "dark": "assets/icon-dark.svg"
+        }
       },
       {
         "command": "markdownCompiler.visual",
@@ -56,58 +60,12 @@
     "menus": {
       "editor/title": [
         {
-          "command": "markdownCompiler.openPreferred",
-          "when": "resourceLangId == markdown",
-          "group": "navigation@0"
-        },
-        {
           "command": "markdownCompiler.split",
           "when": "resourceLangId == markdown",
-          "group": "navigation@1"
-        },
-        {
-          "command": "markdownCompiler.visual",
-          "when": "resourceLangId == markdown",
-          "group": "navigation@2"
-        },
-        {
-          "command": "markdownCompiler.pdf",
-          "when": "resourceLangId == markdown",
-          "group": "navigation@3"
-        },
-        {
-          "command": "markdownCompiler.export",
-          "when": "resourceLangId == markdown",
-          "group": "navigation@4"
+          "group": "navigation@0"
         }
       ]
     },
-    "keybindings": [
-      {
-        "command": "markdownCompiler.openPreferred",
-        "key": "ctrl+alt+e",
-        "mac": "cmd+alt+e",
-        "when": "editorLangId == markdown"
-      },
-      {
-        "command": "markdownCompiler.split",
-        "key": "ctrl+alt+m",
-        "mac": "cmd+alt+m",
-        "when": "editorLangId == markdown"
-      },
-      {
-        "command": "markdownCompiler.visual",
-        "key": "ctrl+alt+v",
-        "mac": "cmd+alt+v",
-        "when": "editorLangId == markdown"
-      },
-      {
-        "command": "markdownCompiler.pdf",
-        "key": "ctrl+alt+p",
-        "mac": "cmd+alt+p",
-        "when": "editorLangId == markdown"
-      }
-    ],
     "configuration": {
       "title": "Markdown Compiler",
       "properties": {
@@ -156,7 +114,7 @@
     "watch": "node scripts/build.mjs --watch",
     "check": "tsc --noEmit",
     "test": "npm run build && node --test test/*.test.cjs",
-    "package": "npm run build && vsce package --no-dependencies"
+    "package": "npm run build && node scripts/package.mjs"
   },
   "dependencies": {
     "dompurify": "^3.2.6",

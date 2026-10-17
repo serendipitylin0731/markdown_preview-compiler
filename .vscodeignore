@@ -4,7 +4,7 @@ test/**
 node_modules/**
 TASK.md
 tsconfig.json
-*.vsix
+packages/**
 .git/**
 .vscode/**
 .github/**

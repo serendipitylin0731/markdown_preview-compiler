@@ -33,7 +33,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vsix-${{ runner.os }}
-          path: '*.vsix'
+          path: 'packages/*.vsix'
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

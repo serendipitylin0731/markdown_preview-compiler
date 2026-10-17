@@ -4,20 +4,22 @@
 
 ## 安装
 
-从仓库的构建产物下载 `markdown-preview-compiler-*.vsix`，在 VS Code 中运行 **Extensions: Install from VSIX...**。本地构建可运行：
+从仓库的 [Releases](https://github.com/serendipitylin0731/markdown_preview-compiler/releases) 下载 `markdown-preview-compiler-*.vsix`，在 VS Code 中运行 **Extensions: Install from VSIX...**。本地构建可运行：
 
 ```bash
 npm ci
 npm run package
 ```
 
-生成的 VSIX 位于项目根目录。扩展运行时不需要网络，渲染库和 PDF 引擎均随安装包提供。
+生成的 VSIX 统一放在 `packages/` 目录。扩展运行时不需要网络，渲染库和 PDF 引擎均随安装包提供。
 
 ## 使用
 
-打开 `.md` 文件后，可从编辑器标题按钮或命令面板使用：
+打开 `.md` 文件后，点击编辑器标题栏的 Markdown 小图标，即可在左侧编辑源码、右侧实时预览。预览页顶部可切换到源码、分屏、所见即所得或 PDF 对照模式；导出 PDF、排版设置和模板也在预览页内操作。
 
 仓库中的 [演示文档](examples/demo.md) 可直接用于体验完整流程。
+
+以下功能也可从 VS Code 命令面板运行：
 
 | 命令 | 效果 |
 | --- | --- |
@@ -28,7 +30,7 @@ npm run package
 | `Markdown Compiler: PDF 对照预览` | 边编辑边查看实际生成的 PDF |
 | `Markdown Compiler: 导出 PDF` | 预览并选择 PDF 保存位置 |
 
-常用快捷键：`Ctrl+Alt+E` 打开上次模式、`Ctrl+Alt+M` 分屏、`Ctrl+Alt+V` 所见即所得、`Ctrl+Alt+P` PDF；macOS 使用 `Cmd` 代替 `Ctrl`。所见即所得模式内可用 `Ctrl/Cmd+B`、`Ctrl/Cmd+I` 和 Tab / Shift+Tab。
+扩展不注册模式切换快捷键，以免和其他扩展或用户设置冲突。所见即所得模式内可用 `Ctrl/Cmd+B`、`Ctrl/Cmd+I` 和 Tab / Shift+Tab 编辑内容。
 
 可在所见即所得工具栏插入链接、图片、表格、代码、公式、Mermaid 图表和手动分页符。复杂代码块、公式、图表及 HTML 区块提供对应源码编辑入口，避免可视化编辑时破坏原始内容。编辑以块为单位写回 VS Code 的 `TextDocument`；文件的未保存状态、保存和撤销由 VS Code 管理。
 
