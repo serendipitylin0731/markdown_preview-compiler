@@ -93,10 +93,10 @@ let version = 0;
 let mode = boot.mode;
 let settings: any = {};
 let exportSettings: any = {
-  paper: 'a4', orientation: 'portrait', marginTop: 18, marginRight: 18, marginBottom: 18, marginLeft: 18,
+  paper: 'a4', orientation: 'portrait', marginTop: 24, marginRight: 22, marginBottom: 24, marginLeft: 22,
   fontSize: 11, lineHeight: 1.5, paragraphGap: 8, template: 'simple', cover: false, toc: false,
   header: '', footer: '', pageNumbers: true, firstLineIndent: 0, align: 'left',
-  fontFamily: 'Arial, sans-serif', titleFontFamily: 'Georgia, serif', headingScale: 1,
+  fontFamily: '', titleFontFamily: '', headingScale: 1,
   headingGap: 1, pageNumberPosition: 'right', pageNumberFormat: 'fraction',
   codeBackground: '#f4f6f8', tableHeaderBackground: '#eef2f6', tableBorderColor: '#aab4bf'
 };
@@ -132,6 +132,10 @@ let showBreaks = true;
 let pageBoundaries: Array<{ line: number; page: number; type: string }> = [];
 let lastScrollLine = 0;
 let suppressScrollUntil = 0;
+let lastSentScrollLine = -1;
+let marginDraft: any = null;
+let fonts: any[] = [];
+let fontsReady: Promise<void> = Promise.resolve();
 let activeBlock = -1;
 let editSerial = 0;
 let savedRange: Range | null = null;
@@ -245,8 +249,8 @@ function pdfControls() {
     <button data-action="prev">‹</button><span id="pageInfo">0 / 0</span><button data-action="next">›</button>
     <button data-action="zoomOut">−</button><span id="zoomLabel">100%</span><button data-action="zoomIn">+</button>
     <button data-action="fitWidth">适合宽度</button><button data-action="fitPage">适合页面</button>
-    <button data-action="breakMarkers">分页标记</button>
-    <button data-action="fullPdf">独立预览</button></div><div id="pdfStatus" class="pdf-status"></div><div id="pdfPages" class="pdf-pages"></div>`;
+    <button data-action="breakMarkers" aria-pressed="${showBreaks}">${showBreaks ? '隐藏分页标记' : '显示分页标记'}</button>
+    ${mode === 'visual' ? '<button data-action="fullPdf" aria-pressed="false">展开 PDF</button>' : ''}</div><div id="pdfStatus" class="pdf-status"></div><div id="pdfPages" class="pdf-pages"></div>`;
 }
 function buildShell() {
   root.innerHTML = `${toolbar()}<div id="workspace" class="${mode} ${visualPdf ? 'with-pdf' : ''}">
@@ -260,6 +264,8 @@ function buildShell() {
   root.addEventListener('keydown', onKeydown);
   root.addEventListener('focusin', onFocus);
   root.querySelector('.document-scroll')?.addEventListener('scroll', onDocumentScroll, { passive: true });
+  const documentPane = root.querySelector<HTMLElement>('.document-scroll');
+  if (documentPane) new ResizeObserver(() => documentPane.style.setProperty('--preview-height', `${documentPane.clientHeight}px`)).observe(documentPane);
   const pdfPages = document.getElementById('pdfPages');
   pdfPages?.addEventListener('scroll', () => {
     const slots = [...pdfPages.querySelectorAll<HTMLElement>('.pdf-page-slot')];
@@ -280,7 +286,7 @@ function renderDocument(preserve = true) {
   localizeImages(body);
   void renderMermaid(body);
   if (pane) pane.scrollTop = previous;
-  if (mode === 'preview' && lastScrollLine) scrollToLine(lastScrollLine);
+  if (mode === 'preview' && lastScrollLine && settings.syncScroll) scrollToLine(lastScrollLine);
   if (mode === 'pdf') document.getElementById('documentPane')!.style.display = 'none';
   document.documentElement.style.setProperty('--editor-font', settings.fontFamily || 'system-ui, sans-serif');
   document.documentElement.style.setProperty('--editor-size', `${settings.fontSize || 16}px`);
@@ -289,17 +295,26 @@ function renderDocument(preserve = true) {
   document.documentElement.style.setProperty('--editor-width', `${settings.maxWidth || 860}px`);
 }
 function scrollToLine(line: number) {
-  suppressScrollUntil = Date.now() + 180;
+  const pane = document.querySelector<HTMLElement>('.document-scroll');
+  if (!pane) return;
   const nodes = [...document.querySelectorAll<HTMLElement>('#documentBody .md-block')];
   const node = nodes.findLast(n => Number(n.dataset.line) <= line) || nodes[0];
-  if (node) node.scrollIntoView({ block: 'start' });
+  if (!node) return;
+  const offset = node.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop;
+  const target = Math.max(0, Math.min(offset, pane.scrollHeight - pane.clientHeight));
+  if (Math.abs(pane.scrollTop - target) < 2) return;
+  suppressScrollUntil = Date.now() + 350;
+  pane.scrollTop = target;
 }
 function onDocumentScroll() {
   if (mode !== 'preview' || !settings.syncScroll || Date.now() < suppressScrollUntil) return;
-  const top = document.querySelector('.document-scroll')!.getBoundingClientRect().top + 50;
+  const pane = document.querySelector<HTMLElement>('.document-scroll')!;
+  const top = pane.getBoundingClientRect().top + 50;
   const nodes = [...document.querySelectorAll<HTMLElement>('#documentBody .md-block')];
-  const node = nodes.findLast(n => n.getBoundingClientRect().top <= top);
-  if (node) post('scrollTo', { line: Number(node.dataset.line) });
+  const atBottom = pane.scrollTop >= pane.scrollHeight - pane.clientHeight - 2;
+  const node = atBottom ? nodes.at(-1) : nodes.findLast(n => n.getBoundingClientRect().top <= top);
+  const line = node ? Number(node.dataset.line) : -1;
+  if (line >= 0 && line !== lastSentScrollLine) { lastSentScrollLine = line; post('scrollTo', { line }); }
 }
 function selectedBlockElement(): HTMLElement | null {
   const selection = window.getSelection();
@@ -407,16 +422,66 @@ function closeDialog() { document.getElementById('dialogBackdrop')!.classList.ad
 function settingField(name: string, label: string, type = 'text', min = '') {
   return `<label>${label}<input id="set-${name}" type="${type}" ${min ? `min="${min}"` : ''} value="${esc(exportSettings[name])}"></label>`;
 }
+function fontField(name: string, label: string) {
+  const current = exportSettings[name] || '';
+  const options = [{ family: '', name: '跟随 VS Code 编辑器字体' }, ...fonts];
+  if (current && !options.some(font => font.family === current)) options.push({ family: current, name: current });
+  return `<label>${label}<select id="set-${name}">${options.map(font =>
+    `<option value="${esc(font.family)}" ${font.family === current ? 'selected' : ''}>${esc(font.name)}</option>`).join('')}</select></label>`;
+}
+function paperSizeFor(paper: string, orientation: string): [number, number] {
+  const sizes: any = { a4: [210, 297], a5: [148, 210], letter: [215.9, 279.4] };
+  const size = sizes[paper] || sizes.a4;
+  return orientation === 'landscape' ? [size[1], size[0]] : size;
+}
+function updateMarginSheet() {
+  const sheet = document.getElementById('marginSheet') as HTMLElement | null;
+  const selection = document.getElementById('marginSelection') as HTMLElement | null;
+  if (!sheet || !selection || !marginDraft) return;
+  const [width, height] = paperSizeFor((document.getElementById('set-paper') as HTMLSelectElement).value,
+    (document.getElementById('set-orientation') as HTMLSelectElement).value);
+  sheet.style.width = `${230 * width / height}px`;
+  selection.style.left = `${marginDraft.marginLeft / width * 100}%`;
+  selection.style.right = `${marginDraft.marginRight / width * 100}%`;
+  selection.style.top = `${marginDraft.marginTop / height * 100}%`;
+  selection.style.bottom = `${marginDraft.marginBottom / height * 100}%`;
+  document.getElementById('marginText')!.textContent = `正文区域：上 ${Math.round(marginDraft.marginTop)}、右 ${Math.round(marginDraft.marginRight)}、下 ${Math.round(marginDraft.marginBottom)}、左 ${Math.round(marginDraft.marginLeft)} mm`;
+}
+function bindMarginSheet() {
+  const sheet = document.getElementById('marginSheet') as HTMLElement;
+  let start: { x: number; y: number } | null = null;
+  const coords = (event: PointerEvent) => {
+    const rect = sheet.getBoundingClientRect();
+    return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) };
+  };
+  sheet.addEventListener('pointerdown', event => { start = coords(event); sheet.setPointerCapture(event.pointerId); });
+  sheet.addEventListener('pointermove', event => {
+    if (!start) return;
+    const end = coords(event);
+    const [width, height] = paperSizeFor((document.getElementById('set-paper') as HTMLSelectElement).value,
+      (document.getElementById('set-orientation') as HTMLSelectElement).value);
+    if (Math.abs(end.x - start.x) * width < 30 || Math.abs(end.y - start.y) * height < 30) return;
+    marginDraft = { marginLeft: Math.min(60, Math.round(Math.min(start.x, end.x) * width)),
+      marginRight: Math.min(60, Math.round((1 - Math.max(start.x, end.x)) * width)),
+      marginTop: Math.min(60, Math.round(Math.min(start.y, end.y) * height)),
+      marginBottom: Math.min(60, Math.round((1 - Math.max(start.y, end.y)) * height)) };
+    updateMarginSheet();
+  });
+  sheet.addEventListener('pointerup', () => { start = null; });
+  sheet.addEventListener('pointercancel', () => { start = null; });
+}
 function settingsDialog() {
+  marginDraft = Object.fromEntries(['marginTop','marginRight','marginBottom','marginLeft'].map(key => [key, exportSettings[key]]));
   showDialog('PDF 排版设置', `<div class="setting-grid">
     <label>纸张<select id="set-paper"><option value="a4">A4</option><option value="a5">A5</option><option value="letter">Letter</option></select></label>
     <label>方向<select id="set-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
-    ${settingField('marginTop','上边距 mm','number','0')}${settingField('marginRight','右边距 mm','number','0')}
-    ${settingField('marginBottom','下边距 mm','number','0')}${settingField('marginLeft','左边距 mm','number','0')}
+    <div class="margin-editor"><strong>页边距</strong><p>在白色页面上拖拽，框选正文区域</p><div id="marginSheet" class="margin-sheet" role="img" aria-label="拖拽框选 PDF 正文区域"><div id="marginSelection" class="margin-selection"></div></div><p id="marginText"></p></div>
     ${settingField('fontSize','正文字号 pt','number','6')}${settingField('lineHeight','行距','number','1')}
     ${settingField('paragraphGap','段落间距 px','number','0')}${settingField('firstLineIndent','首行缩进 em','number','0')}
     <label>对齐<select id="set-align"><option value="left">左对齐</option><option value="justify">两端对齐</option><option value="center">居中</option></select></label>
-    ${settingField('fontFamily','正文字体 CSS 名称')}${settingField('titleFontFamily','标题字体 CSS 名称')}
+    ${fontField('fontFamily','正文字体')}${fontField('titleFontFamily','标题字体')}
+    <div class="font-setting"><button data-action="importFont" type="button">导入字体文件</button><p>支持 TTF、OTF、WOFF、WOFF2；导入后可在上方选择。</p></div>
     ${settingField('headingScale','标题大小倍率','number','0.5')}${settingField('headingGap','标题间距倍率','number','0.5')}
     ${settingField('codeBackground','代码块背景','color')}${settingField('tableHeaderBackground','表头背景','color')}
     ${settingField('tableBorderColor','表格边框','color')}
@@ -428,6 +493,7 @@ function settingsDialog() {
     <label><input id="set-toc" type="checkbox" ${exportSettings.toc ? 'checked' : ''}>自动目录</label>
     </div><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="saveSettings" class="primary">应用</button></div>`);
   for (const key of ['paper','orientation','align','pageNumberPosition','pageNumberFormat']) (document.getElementById('set-' + key) as HTMLSelectElement).value = exportSettings[key];
+  updateMarginSheet(); bindMarginSheet();
 }
 function templateDialog() {
   const all = [
@@ -443,6 +509,7 @@ function templateDialog() {
 }
 function onChange(event: Event) {
   const target = event.target as HTMLInputElement;
+  if (target.id === 'set-paper' || target.id === 'set-orientation') updateMarginSheet();
   if (target.id === 'autoUpdate') {
     autoUpdate = target.checked; if (autoUpdate) schedulePdf();
   }
@@ -487,6 +554,11 @@ function onClick(event: MouseEvent) {
   if (['source','split','visual','pdf'].includes(action)) {
     if (action === 'pdf' && mode === 'visual') {
       visualPdf = !visualPdf; document.getElementById('workspace')!.classList.toggle('with-pdf', visualPdf);
+      if (!visualPdf) {
+        root.classList.remove('pdf-full');
+        const expand = root.querySelector<HTMLButtonElement>('button[data-action="fullPdf"]');
+        if (expand) { expand.textContent = '展开 PDF'; expand.setAttribute('aria-pressed', 'false'); }
+      }
       button.classList.toggle('selected', visualPdf); if (visualPdf) schedulePdf(); return;
     }
     post(action); return;
@@ -495,6 +567,7 @@ function onClick(event: MouseEvent) {
   if (action === 'template') return templateDialog();
   if (action === 'cancelDialog') return closeDialog();
   if (action === 'importTemplate') return post('importTemplate');
+  if (action === 'importFont') return post('importFont');
   if (action === 'exportTemplate') return post('exportTemplate', { id: button.dataset.id });
   if (action === 'chooseTemplate') {
     exportSettings.template = (document.querySelector('input[name=template]:checked') as HTMLInputElement)?.value || 'simple';
@@ -502,7 +575,8 @@ function onClick(event: MouseEvent) {
   }
   if (action === 'saveSettings') {
     for (const key of ['paper','orientation','align','fontFamily','titleFontFamily','codeBackground','tableHeaderBackground','tableBorderColor','header','footer','pageNumberPosition','pageNumberFormat']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).value;
-    for (const key of ['marginTop','marginRight','marginBottom','marginLeft','fontSize','lineHeight','paragraphGap','firstLineIndent','headingScale','headingGap']) exportSettings[key] = Number((document.getElementById('set-' + key) as HTMLInputElement).value);
+    Object.assign(exportSettings, marginDraft);
+    for (const key of ['fontSize','lineHeight','paragraphGap','firstLineIndent','headingScale','headingGap']) exportSettings[key] = Number((document.getElementById('set-' + key) as HTMLInputElement).value);
     for (const key of ['pageNumbers','cover','toc']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).checked;
     normalizeExportSettings();
     pdfDirty = true; post('saveSettings', { value: exportSettings }); closeDialog(); schedulePdf(); return;
@@ -524,11 +598,16 @@ function onClick(event: MouseEvent) {
   if (action === 'fitPage') return fitPdf('page');
   if (action === 'breakMarkers') {
     showBreaks = !showBreaks; root.classList.toggle('hide-breaks', !showBreaks);
+    button.textContent = showBreaks ? '隐藏分页标记' : '显示分页标记'; button.setAttribute('aria-pressed', String(showBreaks));
     markPageBoundaries();
     post('pageBoundaries', { boundaries: showBreaks ? pageBoundaries : [] });
     return;
   }
-  if (action === 'fullPdf') { root.classList.toggle('pdf-full'); return; }
+  if (action === 'fullPdf') {
+    const expanded = root.classList.toggle('pdf-full');
+    button.textContent = expanded ? '返回对照' : '展开 PDF'; button.setAttribute('aria-pressed', String(expanded));
+    return;
+  }
   if (action === 'bold' || action === 'italic' || action === 'strike') {
     document.execCommand(action === 'strike' ? 'strikeThrough' : action); const block = selectedBlockElement(); if (block) scheduleBlockSave(block); return;
   }
@@ -648,9 +727,7 @@ function onClick(event: MouseEvent) {
 
 const mmToPx = (mm: number) => mm * 96 / 25.4;
 function paperSize() {
-  const sizes: any = { a4: [210, 297], a5: [148, 210], letter: [215.9, 279.4] };
-  const size = sizes[exportSettings.paper] || sizes.a4;
-  return exportSettings.orientation === 'landscape' ? [size[1], size[0]] : size;
+  return paperSizeFor(exportSettings.paper, exportSettings.orientation);
 }
 function templateBackground() {
   const custom = templates.find(t => t.id === exportSettings.template);
@@ -685,8 +762,8 @@ function makePage(number: number, total = 0, cover = false): HTMLElement {
   page.style.setProperty('--print-paragraph-gap', `${Number(exportSettings.paragraphGap) || 0}px`);
   page.style.setProperty('--print-indent', `${Number(exportSettings.firstLineIndent) || 0}em`);
   page.style.setProperty('--print-align', exportSettings.align || 'left');
-  page.style.setProperty('--print-font-family', exportSettings.fontFamily || 'Arial, sans-serif');
-  page.style.setProperty('--print-title-family', exportSettings.titleFontFamily || 'Georgia, serif');
+  page.style.setProperty('--print-font-family', exportSettings.fontFamily?.trim() || settings.editorFontFamily || 'monospace');
+  page.style.setProperty('--print-title-family', exportSettings.titleFontFamily?.trim() || settings.editorFontFamily || 'monospace');
   page.style.setProperty('--print-heading-scale', String(exportSettings.headingScale || 1));
   page.style.setProperty('--print-heading-gap', String(exportSettings.headingGap || 1));
   page.style.setProperty('--print-code-bg', exportSettings.codeBackground || '#f4f6f8');
@@ -711,6 +788,19 @@ function waitImages(container: HTMLElement) {
   return Promise.all(images.map(img => img.complete ? Promise.resolve() : new Promise<void>(resolve => {
     img.onload = () => resolve(); img.onerror = () => resolve(); setTimeout(resolve, 3000);
   })));
+}
+function textLineBottoms(element: HTMLElement): number[] {
+  const top = element.getBoundingClientRect().top;
+  const bottoms: number[] = [];
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!node.textContent?.trim()) continue;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    for (const rect of range.getClientRects()) if (rect.height) bottoms.push(rect.bottom - top);
+  }
+  return [...new Set(bottoms.map(value => Math.round(value * 10) / 10))].sort((a, b) => a - b);
 }
 async function paginate() {
   const host = document.getElementById('printHost')!;
@@ -753,39 +843,45 @@ async function paginate() {
     await renderMermaid(element);
     if (content.scrollHeight <= contentHeight() + 2) continue;
     content.removeChild(element);
-    if (content.children.length) nextPage(block.line);
+    const table = element.querySelector('table');
+    const rows = table ? [...table.querySelectorAll('tbody tr')] : [];
+    const pre = element.querySelector('pre');
+    const lines = pre?.textContent?.includes('\n') ? pre.textContent.split('\n') : [];
+    const canFlow = rows.length > 1 || lines.length > 1 || (!table && !pre && !!element.querySelector('p, blockquote, li'));
+    const last = content.lastElementChild as HTMLElement | null;
+    const occupied = last ? last.getBoundingClientRect().bottom - content.getBoundingClientRect().top : 0;
+    const minimumSpace = Math.max(30, parseFloat(getComputedStyle(content).fontSize) * Number(exportSettings.lineHeight || 1.5) * 2);
+    if (content.children.length && (!canFlow || contentHeight() - occupied < minimumSpace)) nextPage(block.line);
     content.append(element);
     if (content.scrollHeight <= contentHeight() + 2) continue;
     // Rows of an oversized table can continue on a later page with its header.
-    const table = element.querySelector('table');
-    if (table) {
-      const rows = [...table.querySelectorAll('tbody tr')];
-      if (rows.length > 1) {
-        content.removeChild(element);
-        let current: HTMLElement | null = null;
-        for (const row of rows) {
-          if (!current) {
-            current = element.cloneNode(true) as HTMLElement;
-            current.querySelector('tbody')!.innerHTML = '';
-            content.append(current);
-          }
-          current.querySelector('tbody')!.append(row.cloneNode(true));
-          if (content.scrollHeight > contentHeight() + 2 && current.querySelectorAll('tbody tr').length > 1) {
-            current.querySelector('tbody tr:last-child')!.remove();
+    if (rows.length > 1) {
+      content.removeChild(element);
+      let current: HTMLElement | null = null;
+      for (const row of rows) {
+        if (!current) {
+          current = element.cloneNode(true) as HTMLElement;
+          current.querySelector('tbody')!.innerHTML = '';
+          content.append(current);
+        }
+        current.querySelector('tbody')!.append(row.cloneNode(true));
+        if (content.scrollHeight > contentHeight() + 2) {
+          const currentRows = current.querySelectorAll('tbody tr');
+          if (currentRows.length === 1 && content.children.length > 1) {
+            current.remove(); nextPage(block.line); content.append(current);
+          } else if (currentRows.length > 1) {
+            currentRows[currentRows.length - 1].remove();
             nextPage(block.line); current = element.cloneNode(true) as HTMLElement;
             current.querySelector('tbody')!.innerHTML = '';
             current.querySelector('tbody')!.append(row.cloneNode(true));
             content.append(current);
           }
         }
-        continue;
       }
+      continue;
     }
     // Long preformatted content is split on lines; the original Markdown remains intact.
-    const pre = element.querySelector('pre');
-    if (pre && pre.textContent?.includes('\n')) {
-      const text = pre.textContent;
-      const lines = text.split('\n');
+    if (lines.length > 1) {
       content.removeChild(element);
       let current: HTMLElement | null = null;
       for (const line of lines) {
@@ -797,31 +893,53 @@ async function paginate() {
         const currentPre = current.querySelector('pre')!;
         const old = currentPre.textContent || '';
         currentPre.textContent = old + (old ? '\n' : '') + line;
-        if (content.scrollHeight > contentHeight() + 2 && old) {
-          currentPre.textContent = old; nextPage(block.line);
-          current = element.cloneNode(true) as HTMLElement;
-          current.querySelector('pre')!.textContent = line;
-          content.append(current);
+        if (content.scrollHeight > contentHeight() + 2) {
+          if (!old && content.children.length > 1) {
+            current.remove(); nextPage(block.line); content.append(current);
+          } else if (old) {
+            currentPre.textContent = old; nextPage(block.line);
+            current = element.cloneNode(true) as HTMLElement;
+            current.querySelector('pre')!.textContent = line;
+            content.append(current);
+          }
         }
       }
     } else {
-      // A long paragraph or quote continues on subsequent physical pages.
-      const fullHeight = element.getBoundingClientRect().height;
+      // Continue text at rendered line boundaries, using any remaining room on this page.
       content.removeChild(element);
+      const probe = document.createElement('div');
+      probe.className = 'print-fragment';
+      probe.style.height = '0';
+      const probeClone = element.cloneNode(true) as HTMLElement;
+      probeClone.style.position = 'absolute'; probeClone.style.top = '0'; probeClone.style.left = '0'; probeClone.style.width = '100%';
+      probe.append(probeClone); content.append(probe);
+      const lineBottoms = textLineBottoms(probeClone);
+      const fullHeight = Math.max(probeClone.getBoundingClientRect().height, (lineBottoms.at(-1) || 0) + 2);
+      probe.remove();
       let offset = 0;
       while (offset < fullHeight - 1) {
         const last = content.lastElementChild as HTMLElement | null;
         const occupied = last ? last.getBoundingClientRect().bottom - content.getBoundingClientRect().top : 0;
         const available = contentHeight() - occupied;
         if (available < 30) { nextPage(block.line); continue; }
-        const height = Math.min(available, fullHeight - offset);
+        let height = Math.min(available, fullHeight - offset);
+        let nextOffset = offset + height;
+        if (nextOffset < fullHeight - 1 && lineBottoms.length) {
+          const lastLine = lineBottoms.filter(bottom => bottom > offset + 1 && bottom <= nextOffset - 2).at(-1);
+          if (!lastLine) {
+            if (content.children.length) { nextPage(block.line); continue; }
+          } else {
+            nextOffset = lastLine >= lineBottoms.at(-1)! - 1 ? fullHeight : lastLine + 1;
+            height = Math.min(available, nextOffset - offset);
+          }
+        }
         const fragment = document.createElement('div');
         fragment.className = 'print-fragment';
         fragment.style.height = `${height}px`;
         const clone = element.cloneNode(true) as HTMLElement;
         clone.style.position = 'absolute'; clone.style.top = `-${offset}px`; clone.style.left = '0'; clone.style.width = '100%';
         fragment.append(clone); content.append(fragment);
-        offset += height;
+        offset = nextOffset;
         if (offset < fullHeight - 1) nextPage(block.line);
       }
     }
@@ -860,11 +978,12 @@ function schedulePdf(force = false) {
 async function generatePdf() {
   if (pdfBusy) { pdfQueued = true; return; }
   pdfBusy = true; pdfQueued = false;
-  const generationKey = JSON.stringify([version, exportSettings]);
+  const generationKey = JSON.stringify([version, exportSettings, settings.editorFontFamily]);
   const status = document.getElementById('pdfStatus');
   if (status) status.textContent = '正在生成 PDF…';
   toast('正在生成 PDF…');
   try {
+    await fontsReady;
     const pages = await paginate();
     const [width, height] = paperSize();
     const pdf = new jsPDF({ orientation: exportSettings.orientation, unit: 'mm', format: [width, height], compress: true });
@@ -873,7 +992,7 @@ async function generatePdf() {
       if (status) status.textContent = `正在生成 PDF：${i + 1} / ${pages.length}`;
       const page = pages[i];
       const canvas = await html2canvas(page, { scale: 1.5, useCORS: true, allowTaint: false, backgroundColor: '#fff', logging: false,
-        width: page.offsetWidth, height: page.offsetHeight, windowWidth: page.offsetWidth });
+        width: page.offsetWidth, height: page.offsetHeight, windowWidth: page.offsetWidth, windowHeight: page.offsetHeight });
       pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, width, height, undefined, 'FAST');
       // Keep links clickable even though the page artwork is rasterized.
       for (const link of page.querySelectorAll<HTMLAnchorElement>('a[href]')) {
@@ -885,7 +1004,7 @@ async function generatePdf() {
       }
       await new Promise(resolve => setTimeout(resolve, 0));
     }
-    if (generationKey !== JSON.stringify([version, exportSettings])) {
+    if (generationKey !== JSON.stringify([version, exportSettings, settings.editorFontFamily])) {
       pdfQueued = true;
       if (status) status.textContent = '文档已变化，正在重新生成 PDF…';
       return;
@@ -986,12 +1105,38 @@ function sendPdfBytes() {
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   post('savePdf', { data: btoa(binary) });
 }
+function setFonts(items: any[], importedId?: string) {
+  fonts = items.filter(font => /^[a-z0-9-]+$/i.test(font.family) && typeof font.url === 'string');
+  let style = document.getElementById('importedFontsStyle') as HTMLStyleElement | null;
+  if (!style) { style = document.createElement('style'); style.id = 'importedFontsStyle'; document.head.append(style); }
+  style.textContent = fonts.map(font => `@font-face{font-family:${font.family};src:url(${JSON.stringify(font.url)});font-display:block}`).join('\n');
+  fontsReady = Promise.all(fonts.map(async font => {
+    try {
+      await document.fonts.load(`16px ${font.family}`);
+    } catch { toast(`字体无法加载：${font.name}`, true); }
+  })).then(() => {});
+  const dialog = document.getElementById('dialogBackdrop');
+  if (dialog && !dialog.classList.contains('hidden') && document.getElementById('set-fontFamily')) {
+    for (const key of ['fontFamily', 'titleFontFamily']) {
+      const select = document.getElementById('set-' + key) as HTMLSelectElement;
+      const previous = select.value;
+      const options = [{ family: '', name: '跟随 VS Code 编辑器字体' }, ...fonts];
+      if (previous && !options.some(font => font.family === previous)) options.push({ family: previous, name: previous });
+      select.innerHTML = options.map(font =>
+        `<option value="${esc(font.family)}">${esc(font.name)}</option>`).join('');
+      select.value = key === 'fontFamily' && importedId ? fonts.find(font => font.id === importedId)?.family || previous : previous;
+    }
+  }
+  void fontsReady.then(() => { pdfDirty = true; schedulePdf(); });
+}
 window.addEventListener('message', (event: MessageEvent) => {
   const message = event.data;
   if (message.type === 'document') {
     settings = message.settings || {}; exportSettings = { ...exportSettings, ...(message.exportSettings || {}) };
+    if (exportSettings.fontFamily === 'Arial, sans-serif') exportSettings.fontFamily = '';
+    if (exportSettings.titleFontFamily === 'Georgia, serif') exportSettings.titleFontFamily = '';
     normalizeExportSettings();
-    templates = message.templates || []; autoUpdate = settings.autoUpdate !== false;
+    templates = message.templates || []; setFonts(message.fonts || []); autoUpdate = settings.autoUpdate !== false;
     autoExport = !!message.autoExport;
     source = message.source; version = message.version; pdfDirty = true; renderDocument(false);
     if (mode === 'pdf' || autoExport) schedulePdf(true);
@@ -1006,11 +1151,13 @@ window.addEventListener('message', (event: MessageEvent) => {
   } else if (message.type === 'conflict') {
     pendingEdit = null; applySource(message.source, message.version); toast('文件已在其他位置修改，页面已更新', true);
   } else if (message.type === 'settings') {
-    settings = message.value; renderDocument(); schedulePdf();
+    settings = message.value; pdfDirty = true; renderDocument(); schedulePdf();
   } else if (message.type === 'exportSettings') {
     exportSettings = { ...exportSettings, ...message.value }; normalizeExportSettings(); pdfDirty = true; schedulePdf();
   } else if (message.type === 'templates') {
     templates = message.templates; templateDialog();
+  } else if (message.type === 'fonts') {
+    setFonts(message.fonts || [], message.importedId);
   } else if (message.type === 'scrollToLine') {
     if (mode === 'preview') { lastScrollLine = message.line; scrollToLine(message.line); }
   } else if (message.type === 'showPdf') {

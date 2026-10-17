@@ -6,14 +6,19 @@ type Mode = 'preview' | 'visual' | 'pdf';
 type Panel = { panel: vscode.WebviewPanel; uri: vscode.Uri; mode: Mode; autoExport?: boolean };
 const panels = new Set<Panel>();
 const boundariesByUri = new Map<string, Array<{ line: number; page: number; type: string }>>();
+const editorScrollEchoUntil = new Map<string, number>();
 let boundaryDecoration: vscode.TextEditorDecorationType;
 let lastDocument: vscode.Uri | undefined;
 let extensionContext: vscode.ExtensionContext;
 
-function settings() {
-  const c = vscode.workspace.getConfiguration('markdownCompiler');
+function settings(uri?: vscode.Uri) {
+  const scope = uri ? { uri, languageId: 'markdown' } : undefined;
+  const c = vscode.workspace.getConfiguration('markdownCompiler', scope);
+  const editorFontFamily = vscode.workspace.getConfiguration('editor', scope).get<string>('fontFamily', 'monospace');
+  const previewFontFamily = c.get<string>('preview.fontFamily', '').trim();
   return {
-    fontFamily: c.get<string>('preview.fontFamily', 'system-ui, sans-serif'),
+    fontFamily: previewFontFamily || editorFontFamily,
+    editorFontFamily,
     fontSize: c.get<number>('preview.fontSize', 16),
     lineHeight: c.get<number>('preview.lineHeight', 1.6),
     paragraphGap: c.get<number>('preview.paragraphGap', 10),
@@ -91,6 +96,12 @@ function templatesFor(state: Panel) {
     url: state.panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.globalStorageUri, template.file)).toString()
   }));
 }
+function fontsFor(state: Panel) {
+  return extensionContext.globalState.get<any[]>('fonts', []).map(font => ({
+    id: font.id, name: font.name, family: font.family,
+    url: state.panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.globalStorageUri, 'fonts', font.file)).toString()
+  }));
+}
 function refreshBoundaryDecorations() {
   for (const editor of vscode.window.visibleTextEditors) {
     const entries = boundariesByUri.get(editor.document.uri.toString()) || [];
@@ -112,8 +123,8 @@ async function handleMessage(state: Panel, message: any) {
   const document = await vscode.workspace.openTextDocument(state.uri);
   try {
     if (message.type === 'ready') {
-      post(state, { type: 'document', source: document.getText(), version: document.version, settings: settings(),
-        exportSettings: extensionContext.globalState.get('exportSettings', {}), templates: templatesFor(state),
+      post(state, { type: 'document', source: document.getText(), version: document.version, settings: settings(document.uri),
+        exportSettings: extensionContext.globalState.get('exportSettings', {}), templates: templatesFor(state), fonts: fontsFor(state),
         autoExport: state.autoExport });
       state.autoExport = false;
     } else if (message.type === 'edit') {
@@ -168,6 +179,24 @@ async function handleMessage(state: Panel, message: any) {
       templates.push({ id, name: path.basename(files[0].fsPath), file: fileName });
       await extensionContext.globalState.update('templates', templates);
       for (const other of panels) post(other, { type: 'templates', templates: templatesFor(other) });
+    } else if (message.type === 'importFont') {
+      const files = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { Fonts: ['ttf', 'otf', 'woff', 'woff2'] } });
+      if (!files?.[0]) return;
+      const bytes = await vscode.workspace.fs.readFile(files[0]);
+      if (bytes.length > 20 * 1024 * 1024) throw new Error('字体文件不能超过 20 MB');
+      const ext = path.extname(files[0].fsPath).toLowerCase();
+      const signature = Buffer.from(bytes.subarray(0, 4)).toString('latin1');
+      const valid = ext === '.ttf' ? (signature === '\x00\x01\x00\x00' || signature === 'true') :
+        ext === '.otf' ? signature === 'OTTO' : ext === '.woff' ? signature === 'wOFF' : ext === '.woff2' && signature === 'wOF2';
+      if (!valid) throw new Error('字体格式与文件扩展名不匹配');
+      const id = crypto.randomUUID();
+      const font = { id, name: path.basename(files[0].fsPath), family: `mdc-font-${id}`, file: `${id}${ext}` };
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(extensionContext.globalStorageUri, 'fonts'));
+      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(extensionContext.globalStorageUri, 'fonts', font.file), bytes);
+      const fonts = extensionContext.globalState.get<any[]>('fonts', []);
+      fonts.push(font);
+      await extensionContext.globalState.update('fonts', fonts);
+      for (const other of panels) post(other, { type: 'fonts', fonts: fontsFor(other), importedId: other === state ? id : undefined });
     } else if (message.type === 'exportTemplate') {
       const template = extensionContext.globalState.get<any[]>('templates', []).find(t => t.id === message.id);
       if (!template) return;
@@ -186,7 +215,10 @@ async function handleMessage(state: Panel, message: any) {
       }
     } else if (message.type === 'scrollTo') {
       const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === state.uri.toString());
-      if (editor) editor.revealRange(new vscode.Range(message.line, 0, message.line, 0), vscode.TextEditorRevealType.AtTop);
+      if (editor && Number.isInteger(message.line) && message.line >= 0 && message.line < document.lineCount) {
+        editorScrollEchoUntil.set(state.uri.toString(), Date.now() + 500);
+        editor.revealRange(new vscode.Range(message.line, 0, message.line, 0), vscode.TextEditorRevealType.AtTop);
+      }
     } else if (message.type === 'pageBoundaries') {
       boundariesByUri.set(state.uri.toString(), Array.isArray(message.boundaries) ? message.boundaries : []);
       refreshBoundaryDecorations();
@@ -267,12 +299,14 @@ export function activate(context: vscode.ExtensionContext) {
         post(state, { type: 'documentChanged', source: event.document.getText(), version: event.document.version });
     }),
     vscode.window.onDidChangeTextEditorVisibleRanges(event => {
-      if (!settings().syncScroll) return;
+      if (!settings(event.textEditor.document.uri).syncScroll) return;
+      if (Date.now() < (editorScrollEchoUntil.get(event.textEditor.document.uri.toString()) || 0)) return;
       for (const state of panels) if (state.mode === 'preview' && state.uri.toString() === event.textEditor.document.uri.toString())
         post(state, { type: 'scrollToLine', line: event.visibleRanges[0]?.start.line ?? 0 });
     }),
     vscode.workspace.onDidChangeConfiguration(event => {
-      if (event.affectsConfiguration('markdownCompiler')) for (const state of panels) post(state, { type: 'settings', value: settings() });
+      if (event.affectsConfiguration('markdownCompiler') || event.affectsConfiguration('editor.fontFamily'))
+        for (const state of panels) post(state, { type: 'settings', value: settings(state.uri) });
     }),
     vscode.window.onDidChangeVisibleTextEditors(() => refreshBoundaryDecorations()),
     vscode.window.onDidChangeActiveTextEditor(editor => {

@@ -27,7 +27,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 #app.pdf-full #documentPane { display: none !important; }
 #app.pdf-full #pdfPane { width: 100%; }
 .document-scroll { height: 100%; overflow: auto; }
-#documentBody { max-width: var(--editor-width); min-height: 90%; padding: 28px 36px 80px; margin: auto; }
+#documentBody { max-width: var(--editor-width); min-height: 100%; padding: 28px 36px max(80px, calc(var(--preview-height, 600px) / 3)); margin: auto; }
 .markdown-body { font-family: var(--editor-font); font-size: var(--editor-size); line-height: var(--editor-line); overflow-wrap: anywhere; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { line-height: 1.25; margin: 1.3em 0 .55em; }
 .markdown-body h1 { font-size: 2em; border-bottom: 1px solid var(--vscode-panel-border, #8886); padding-bottom: .25em; }
@@ -36,8 +36,9 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .markdown-body p { margin: var(--editor-paragraph-gap) 0; }
 .markdown-body img { max-width: 100%; height: auto; }
 .markdown-body img.missing-image { min-width: 150px; min-height: 30px; border: 1px dashed #a55; }
-.markdown-body pre { max-width: 100%; overflow-x: auto; padding: 12px 16px; border-radius: 5px; background: var(--vscode-textCodeBlock-background, #8882); }
-.markdown-body code { font-family: var(--vscode-editor-font-family, monospace); }
+.markdown-body pre { max-width: 100%; overflow-x: auto; padding: 12px 16px; border-radius: 5px; background: var(--vscode-textCodeBlock-background, #8882); box-shadow: none; text-shadow: none; }
+.markdown-body pre *, .print-content pre * { text-shadow: none !important; box-shadow: none !important; }
+.markdown-body code { font-family: var(--vscode-editor-font-family, monospace); font-size: .9em; }
 .markdown-body :not(pre)>code { padding: 1px 4px; border-radius: 3px; background: var(--vscode-textCodeBlock-background, #8882); }
 .markdown-body blockquote { margin: 1em 0; padding: 0 1em; border-left: 4px solid var(--vscode-textBlockQuote-border, #888); color: var(--vscode-textBlockQuote-foreground, inherit); }
 .markdown-body table { width: max-content; min-width: 60%; border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; }
@@ -79,14 +80,26 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .setting-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 18px; }
 .setting-grid label:has(input[type=checkbox]) { flex-direction: row; align-items: center; }
+.margin-editor { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; gap: 7px; margin: 4px 0 14px; }
+.margin-editor p { margin: 0; font-size: 12px; opacity: .8; text-align: center; }
+.margin-sheet { position: relative; height: 230px; background: white; border: 1px solid #9caab8; box-shadow: 0 2px 8px #0004; cursor: crosshair; touch-action: none; }
+.margin-selection { position: absolute; border: 2px solid #2376bb; background: #2376bb2b; pointer-events: none; }
+.font-setting { grid-column: 1 / -1; }
+.font-setting-row { display: flex; gap: 8px; align-items: flex-end; }
+.font-setting-row label { flex: 1; }
 .template-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 .template-option { border: 1px solid var(--vscode-panel-border, #888); padding: 8px; border-radius: 5px; align-items: center; }
 .template-thumb { display: block; width: 80px; height: 110px; background: white; box-shadow: 0 1px 5px #0004; background-size: cover; }
 .template-thumb.academic { border-top: 3px solid #9b7c62; border-bottom: 3px solid #9b7c62; }
 .template-thumb.technical { border-top: 6px solid #245482; border-bottom: 2px solid #245482; }
-#printHost { position: fixed; left: -100000px; top: 0; width: max-content; pointer-events: none; color: #20242a; background: white; }
+#printHost { position: fixed; left: -100000px; top: 0; width: max-content; pointer-events: none; color-scheme: light; color: #20242a; background: white;
+  --vscode-foreground: #20242a; --vscode-editor-foreground: #20242a; --vscode-textCodeBlock-background: #f3f6f9;
+  --vscode-editorWidget-background: #edf1f5; --vscode-panel-border: #aab4bf; --vscode-textLink-foreground: #155d94;
+  --vscode-textBlockQuote-foreground: #495566; --vscode-textBlockQuote-border: #aab4bf; }
 .print-page { position: relative; overflow: hidden; background-color: white; background-position: center; background-size: 100% 100%; color: #20242a; }
-.print-content { position: absolute; top: var(--margin-top); bottom: var(--margin-bottom); left: var(--margin-left); right: var(--margin-right); overflow: hidden; font-family: var(--print-font-family); font-size: var(--print-font-size); line-height: var(--print-line-height); text-align: var(--print-align); }
+.print-content { position: absolute; top: var(--margin-top); bottom: var(--margin-bottom); left: var(--margin-left); right: var(--margin-right); overflow: hidden; color: #20242a; font-family: var(--print-font-family); font-size: var(--print-font-size); line-height: var(--print-line-height); text-align: var(--print-align); }
+#printHost .print-content :is(h1, h2, h3, h4, h5, h6, p, li, th, td, blockquote, pre, code, .hljs, .hljs *) { color: #20242a; }
+#printHost .print-content a { color: #155d94; }
 .print-content p { margin-bottom: var(--print-paragraph-gap); text-indent: var(--print-indent); }
 .print-content h1, .print-content h2, .print-content h3, .print-content h4, .print-content h5, .print-content h6 { break-after: avoid; font-family: var(--print-title-family); font-size: calc(1em * var(--print-heading-scale)); margin-top: calc(1em * var(--print-heading-gap)); }
 .print-content h1 { font-size: calc(2em * var(--print-heading-scale)); }
@@ -95,6 +108,8 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .print-content img { max-height: 75%; object-fit: contain; }
 .print-content pre { white-space: pre-wrap; word-break: break-word; }
 .print-content pre, .print-content :not(pre)>code { background: var(--print-code-bg); }
+#printHost .print-content pre { background: var(--print-code-bg); }
+#printHost .print-content pre code, #printHost .print-content pre .hljs { background: transparent; }
 .print-content table { width: 100%; display: table; }
 .print-content th { background: var(--print-table-header); }
 .print-content th, .print-content td { border-color: var(--print-table-border); }
@@ -114,5 +129,5 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 @media (max-width: 900px) {
   #workspace.with-pdf { flex-direction: column; }
   #workspace.with-pdf #pdfPane { min-height: 45%; border-left: 0; border-top: 1px solid var(--vscode-panel-border, #8886); }
-  #documentBody { padding: 20px 18px 65px; }
+  #documentBody { padding: 20px 18px max(65px, calc(var(--preview-height, 600px) / 3)); }
 }

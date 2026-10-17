@@ -2,7 +2,7 @@
   "name": "markdown-preview-compiler",
   "displayName": "Markdown Preview & Compiler",
   "description": "Markdown source, visual editing, live PDF preview and export.",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "publisher": "serendpity-lin",
   "repository": {
     "type": "git",
@@ -71,8 +71,8 @@
       "properties": {
         "markdownCompiler.preview.fontFamily": {
           "type": "string",
-          "default": "system-ui, sans-serif",
-          "description": "Preview font family"
+          "default": "",
+          "description": "预览字体；留空时使用当前 VS Code 编辑器字体"
         },
         "markdownCompiler.preview.fontSize": {
           "type": "number",

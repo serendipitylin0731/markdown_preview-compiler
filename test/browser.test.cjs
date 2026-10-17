@@ -100,6 +100,96 @@ test('manual page break is present in generated export bytes', async () => {
   await page.close();
 });
 
+test('PDF uses the editor font and a readable light print palette in a dark theme', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await page.addStyleTag({ content: ':root { --vscode-foreground:#cccccc; --vscode-editor-foreground:#cccccc; --vscode-textCodeBlock-background:#3c3c3c; --vscode-panel-border:#3c3c3c; --vscode-textLink-foreground:#4daafc; }' });
+  await deliver(page, { type: 'document', source: '# 字体测试\n\n正文 [链接](https://example.com)\n\n```js\nconst value = 1;\n```\n',
+    version: 1, settings: { editorFontFamily: '"DejaVu Sans Mono", "Noto Sans CJK SC", monospace' },
+    exportSettings: { fontFamily: 'Arial, sans-serif', titleFontFamily: 'Georgia, serif' }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const style = await page.evaluate(() => {
+    const content = document.querySelector('#printHost .print-content');
+    const heading = content.querySelector('h1');
+    const code = content.querySelector('pre');
+    const link = content.querySelector('a');
+    return { font: getComputedStyle(content).fontFamily, body: getComputedStyle(content).color,
+      heading: getComputedStyle(heading).color, code: getComputedStyle(code).color,
+      codeBackground: getComputedStyle(code).backgroundColor, link: getComputedStyle(link).color };
+  });
+  assert.match(style.font, /DejaVu Sans Mono/);
+  assert.equal(style.body, 'rgb(32, 36, 42)');
+  assert.equal(style.heading, 'rgb(32, 36, 42)');
+  assert.equal(style.code, 'rgb(32, 36, 42)');
+  assert.equal(style.codeBackground, 'rgb(244, 246, 248)');
+  assert.equal(style.link, 'rgb(21, 93, 148)');
+  const ink = await page.evaluate(() => {
+    const printPage = document.querySelector('#printHost .print-page');
+    const code = printPage.querySelector('pre').getBoundingClientRect();
+    const heading = printPage.querySelector('h1').getBoundingClientRect();
+    const rect = printPage.getBoundingClientRect();
+    const canvas = document.querySelector('#pdfPages canvas');
+    const context = canvas.getContext('2d');
+    const point = (x, y) => context.getImageData(Math.floor((x - rect.left) * canvas.width / rect.width),
+      Math.floor((y - rect.top) * canvas.height / rect.height), 1, 1).data;
+    const background = [...point(code.right - 8, code.top + 8)].slice(0, 3);
+    let darkPixels = 0;
+    for (let x = heading.left; x < heading.right; x += 2) {
+      for (let y = heading.top; y < heading.bottom; y += 2) {
+        const pixel = point(x, y);
+        if (pixel[0] < 100 && pixel[1] < 100 && pixel[2] < 100) darkPixels++;
+      }
+    }
+    return { background, darkPixels };
+  });
+  assert.ok(ink.background.every(value => value > 220), `code background is too dark: ${ink.background}`);
+  assert.ok(ink.darkPixels > 15, 'the exported heading should have dark ink');
+  await page.close();
+});
+
+test('automatic pagination fills the current page before continuing a long paragraph', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = '# 分页测试\n\n' + '前面的段落。'.repeat(70) + '\n\n' + '接着连续排版的内容。'.repeat(260) + '\n';
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: { paper: 'a5' }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const layout = await page.evaluate(() => [...document.querySelectorAll('#printHost .print-page')].map(page => {
+    const content = page.querySelector('.print-content');
+    const last = content.lastElementChild;
+    let cutLines = 0;
+    for (const fragment of content.querySelectorAll('.print-fragment')) {
+      const edge = fragment.getBoundingClientRect().bottom;
+      const walker = document.createTreeWalker(fragment, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(walker.currentNode);
+        for (const rect of range.getClientRects()) if (rect.top < edge - 2 && rect.bottom > edge + 2) cutLines++;
+      }
+    }
+    return { hasFragment: !!content.querySelector('.print-fragment'),
+      cutLines, used: last ? (last.getBoundingClientRect().bottom - content.getBoundingClientRect().top) / content.clientHeight : 0 };
+  }));
+  assert.ok(layout.length >= 2);
+  assert.ok(layout[0].hasFragment, 'the long paragraph should use the remaining space on page one');
+  assert.ok(layout[0].used > 0.8, `page one was only ${Math.round(layout[0].used * 100)}% full`);
+  assert.ok(layout.every(item => item.cutLines === 0), 'automatic breaks should not cut through text lines');
+  const lowerPageInk = await page.evaluate(() => {
+    const canvas = document.querySelector('#pdfPages canvas');
+    const context = canvas.getContext('2d');
+    const top = Math.floor(canvas.height * 0.7);
+    const pixels = context.getImageData(0, top, canvas.width, Math.floor(canvas.height * 0.2)).data;
+    let count = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      if (pixels[index] < 120 && pixels[index + 1] < 120 && pixels[index + 2] < 120) count++;
+    }
+    return count;
+  });
+  assert.ok(lowerPageInk > 50, 'the exported first page should contain text near its bottom');
+  await page.close();
+});
+
 test('a long paragraph continues across PDF pages', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');
@@ -113,6 +203,22 @@ test('a long paragraph continues across PDF pages', async () => {
   assert.ok(boundaries.some(item => item.type === 'automatic'));
   const info = await page.locator('#pageInfo').textContent();
   assert.ok(Number(info.split('/')[1].trim()) >= 2);
+  await page.close();
+});
+
+test('automatic pagination continues a table row by row', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  const rows = Array.from({ length: 45 }, (_, index) => `| ${index + 1} | 第 ${index + 1} 行说明 |`).join('\n');
+  await deliver(page, { type: 'document', source: '# 表格分页\n\n开头内容。\n\n| 序号 | 说明 |\n| --- | --- |\n' + rows + '\n',
+    version: 1, settings: {}, exportSettings: { paper: 'a5' }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const pageRows = await page.evaluate(() => [...document.querySelectorAll('#printHost .print-page')]
+    .map(item => item.querySelectorAll('.print-content tbody tr').length));
+  assert.ok(pageRows.length >= 2);
+  assert.ok(pageRows[0] > 3 && pageRows[1] > 0);
+  assert.equal(pageRows.reduce((sum, count) => sum + count, 0), 45);
   await page.close();
 });
 
@@ -164,6 +270,82 @@ test('split preview offers mode switching inside the preview pane', async () => 
   assert.ok(await page.locator('button[data-action=pdf]').isVisible());
   assert.ok(await page.locator('button[data-action=source]').isVisible());
   await page.close();
+});
+
+test('preview bottom scroll is bounded and does not oscillate on source echo', async () => {
+  const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = Array.from({ length: 35 }, (_, index) => `第 ${index + 1} 段正文。`).join('\n\n');
+  await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true }, exportSettings: {}, templates: [] });
+  await page.locator('.document-scroll').evaluate(pane => pane.scrollTop = pane.scrollHeight);
+  await page.waitForTimeout(450);
+  const state = await page.evaluate(() => {
+    const pane = document.querySelector('.document-scroll');
+    const last = document.querySelector('#documentBody .md-block:last-child');
+    return { top: pane.scrollTop, max: pane.scrollHeight - pane.clientHeight,
+      bottomFraction: (last.getBoundingClientRect().bottom - pane.getBoundingClientRect().top) / pane.clientHeight,
+      line: window.__MDC_MESSAGES__.findLast(m => m.type === 'scrollTo')?.line };
+  });
+  assert.ok(state.max > 0);
+  assert.ok(state.bottomFraction > 0.56 && state.bottomFraction < 0.76, `last content at ${state.bottomFraction}`);
+  for (let index = 0; index < 5; index++) await deliver(page, { type: 'scrollToLine', line: state.line });
+  await page.waitForTimeout(450);
+  const finalTop = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
+  assert.ok(Math.abs(finalTop - state.top) < 2, `scroll shifted from ${state.top} to ${finalTop}`);
+  await page.close();
+});
+
+test('PDF layout uses a dragged content rectangle and imported font', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const font = { id: 'sample', name: 'Custom.woff2', family: 'mdc-font-sample', url: base + '/fonts/KaTeX_SansSerif-Regular.woff2' };
+  await deliver(page, { type: 'document', source: '# 内容\n\n`small`\n\n```txt\nblock\n```\n', version: 1,
+    settings: {}, exportSettings: {}, templates: [], fonts: [font] });
+  await page.locator('button[data-action=settings]').click();
+  assert.equal(await page.locator('#set-marginTop').count(), 0);
+  assert.match(await page.locator('#marginText').textContent(), /上 24、右 22、下 24、左 22/);
+  assert.equal(await page.locator('#set-fontFamily option').count(), 2);
+  const sheet = await page.locator('#marginSheet').boundingBox();
+  await page.mouse.move(sheet.x + 18, sheet.y + 26);
+  await page.mouse.down();
+  await page.mouse.move(sheet.x + sheet.width - 25, sheet.y + sheet.height - 36, { steps: 5 });
+  await page.mouse.up();
+  await page.locator('#set-fontFamily').selectOption(font.family);
+  await page.locator('button[data-action=saveSettings]').click();
+  const saved = await page.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'saveSettings')?.value);
+  assert.ok(saved.marginTop > 25 && saved.marginTop < 50);
+  assert.ok(saved.marginRight > 20 && saved.marginRight < 50);
+  assert.equal(saved.fontFamily, font.family);
+  assert.ok(await page.evaluate(() => [...document.fonts].some(face => face.family === 'mdc-font-sample' && face.status === 'loaded')));
+  const codeStyle = await page.locator('#documentBody pre code').evaluate(node => ({
+    size: parseFloat(getComputedStyle(node).fontSize), parent: parseFloat(getComputedStyle(node.parentElement.parentElement).fontSize),
+    shadow: getComputedStyle(node).textShadow }));
+  assert.ok(codeStyle.size < codeStyle.parent);
+  assert.equal(codeStyle.shadow, 'none');
+  await page.close();
+});
+
+test('PDF controls show marker state and expand only when a visual pane exists', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '# 内容\n', version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
+  await page.locator('button[data-action=pdf]').click();
+  await page.locator('button[data-action=breakMarkers]').click();
+  assert.equal(await page.locator('button[data-action=breakMarkers]').textContent(), '显示分页标记');
+  assert.equal(await page.locator('button[data-action=breakMarkers]').getAttribute('aria-pressed'), 'false');
+  await page.locator('button[data-action=fullPdf]').click();
+  assert.equal(await page.locator('button[data-action=fullPdf]').textContent(), '返回对照');
+  assert.equal(await page.locator('#documentPane').isVisible(), false);
+  await page.locator('button[data-action=fullPdf]').click();
+  assert.equal(await page.locator('#documentPane').isVisible(), true);
+  await page.close();
+  const standalone = await browser.newPage();
+  await standalone.goto(base + '/?mode=pdf');
+  assert.equal(await standalone.locator('button[data-action=fullPdf]').count(), 0);
+  await standalone.close();
 });
 
 test('visual link and image dialogs write safe Markdown targets', async () => {
