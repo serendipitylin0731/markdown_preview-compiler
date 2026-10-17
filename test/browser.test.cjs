@@ -618,3 +618,26 @@ test('an existing inline formula edits in place without losing its Markdown sour
   assert.match(edit.replacement, /公式 \$y\+2\$ 在正文中/);
   await page.close();
 });
+
+test('visual input syncs automatically and Ctrl S waits for it before saving', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = '正文。\n';
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.locator('#documentBody p').click();
+  await page.keyboard.press('End');
+  await page.keyboard.type('新增');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
+  assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.some(m => m.type === 'saveDocument')), false);
+  await page.keyboard.press('Control+s');
+  assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.some(m => m.type === 'saveDocument')), false);
+  const edit = await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'edit'));
+  const updated = source.slice(0, edit.start) + edit.replacement + source.slice(edit.end);
+  await deliver(page, { type: 'documentChanged', source: updated, version: 2 });
+  await deliver(page, { type: 'editAck', id: edit.id, source: updated, version: 2 });
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'saveDocument'));
+  await deliver(page, { type: 'saveResult', success: true });
+  assert.equal(await page.locator('#status').textContent(), 'Markdown 已保存');
+  await page.close();
+});

@@ -116,6 +116,8 @@ let templates: any[] = [];
 let blocks: Block[] = [];
 let pendingEdit: any = null;
 let editTimer: number | undefined;
+let scheduledBlock: HTMLElement | null = null;
+let saveQueued = false;
 let pdfTimer: number | undefined;
 let pdfBytes: Uint8Array | null = null;
 let pdfPreviewImages: string[] = [];
@@ -454,7 +456,9 @@ function onKeydown(event: KeyboardEvent) {
     event.preventDefault(); document.execCommand(event.key.toLowerCase() === 'b' ? 'bold' : 'italic');
     const block = selectedBlockElement(); if (block) scheduleBlockSave(block);
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); toast('修改已同步到 Markdown 文件，可使用 VS Code 保存'); }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault(); saveQueued = true; toast('正在保存 Markdown…'); flushQueuedSave(); return;
+  }
   if (event.key === 'Tab' && mode === 'visual') {
     const block = selectedBlockElement();
     if (block?.querySelector('li')) {
@@ -483,7 +487,8 @@ function onKeydown(event: KeyboardEvent) {
 }
 function scheduleBlockSave(element: HTMLElement) {
   window.clearTimeout(editTimer);
-  editTimer = window.setTimeout(() => saveBlock(element), 350);
+  scheduledBlock = element;
+  editTimer = window.setTimeout(() => saveBlock(element), 120);
 }
 function serializeBlock(element: HTMLElement, original: Block) {
   if (original.kind === 'code') {
@@ -510,8 +515,10 @@ function serializeBlock(element: HTMLElement, original: Block) {
   return markdown + (original.raw.endsWith('\n') ? '\n' : '');
 }
 function saveBlock(element: HTMLElement) {
+  if (pendingEdit) { scheduledBlock = element; editTimer = window.setTimeout(() => saveBlock(element), 80); return; }
   editTimer = undefined;
-  if (pendingEdit) { window.setTimeout(() => saveBlock(element), 250); return; }
+  if (scheduledBlock === element) scheduledBlock = null;
+  if (!element.isConnected) return;
   const index = Number(element.dataset.index);
   const original = blocks[index];
   if (!original || !original.editable) return;
@@ -520,6 +527,18 @@ function saveBlock(element: HTMLElement) {
   pendingEdit = { id: ++editSerial, index, element, replacement, snapshot: element.innerHTML };
   submitEdit(original.start, original.end, original.raw, replacement, pendingEdit.id);
   toast('正在同步 Markdown…');
+}
+function flushQueuedSave() {
+  if (!saveQueued || pendingEdit || ownEdits.size) return;
+  if (scheduledBlock) {
+    window.clearTimeout(editTimer); editTimer = undefined;
+    const block = scheduledBlock;
+    scheduledBlock = null;
+    saveBlock(block);
+    if (pendingEdit || ownEdits.size) return;
+  }
+  saveQueued = false;
+  post('saveDocument');
 }
 function submitEdit(start: number, end: number, expected: string, replacement: string, id = ++editSerial) {
   ownEdits.set(id, source);
@@ -1442,9 +1461,10 @@ window.addEventListener('message', (event: MessageEvent) => {
     if (pendingEdit?.id === message.id) applySource(message.source, message.version, true);
     else applySource(message.source, message.version);
     if (queuedHistory) { const direction = queuedHistory; queuedHistory = null; changeHistory(direction); }
-    toast('Markdown 已同步');
+    if (saveQueued) flushQueuedSave();
+    else toast('Markdown 已同步');
   } else if (message.type === 'conflict') {
-    pendingEdit = null; ownEdits.clear(); editHistory = []; redoHistory = []; queuedHistory = null; historyDirection = null;
+    pendingEdit = null; ownEdits.clear(); editHistory = []; redoHistory = []; queuedHistory = null; historyDirection = null; saveQueued = false;
     applySource(message.source, message.version); toast('文件已在其他位置修改，页面已更新', true);
   } else if (message.type === 'settings') {
     settings = message.value; pdfDirty = true; renderDocument(); schedulePdf();
@@ -1469,7 +1489,8 @@ window.addEventListener('message', (event: MessageEvent) => {
     visualPdf = true; document.getElementById('workspace')!.classList.add('with-pdf'); schedulePdf(true);
   } else if (message.type === 'exportNow') {
     void exportPdf();
-  } else if (message.type === 'error') toast(message.detail, true);
+  } else if (message.type === 'saveResult') toast(message.success ? 'Markdown 已保存' : 'Markdown 保存失败', !message.success);
+  else if (message.type === 'error') toast(message.detail, true);
   else if (message.type === 'exportResult') toast(message.cancelled ? '已取消导出' : message.success ? 'PDF 已导出' : '导出失败', !message.success && !message.cancelled);
 });
 buildShell();

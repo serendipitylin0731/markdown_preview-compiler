@@ -30,7 +30,7 @@ npm run package
 | `Markdown Compiler: PDF 对照预览` | 边编辑边查看实际生成的 PDF |
 | `Markdown Compiler: 导出 PDF` | 预览并选择 PDF 保存位置 |
 
-扩展不注册模式切换快捷键，以免和其他扩展或用户设置冲突。预览编辑模式内可用 `Ctrl/Cmd+B`、`Ctrl/Cmd+I`、`Ctrl/Cmd+Z`、`Ctrl/Cmd+Shift+Z` 和 Tab / Shift+Tab 编辑内容。
+扩展不注册模式切换快捷键，以免和其他扩展或用户设置冲突。预览编辑模式内可用 `Ctrl/Cmd+B`、`Ctrl/Cmd+I`、`Ctrl/Cmd+Z`、`Ctrl/Cmd+Shift+Z` 和 Tab / Shift+Tab 编辑内容；`Ctrl/Cmd+S` 会先同步当前编辑，再保存原 Markdown 文件。
 
 可在预览编辑工具栏插入链接、图片、表格、行内或独立代码、行内或独立公式、Mermaid 图表和手动分页符。独立代码和公式可在文档内直接编辑；图表及 HTML 区块提供源码编辑入口。单击链接可放置光标，双击编辑链接，`Ctrl/Cmd+单击` 打开链接。编辑以块为单位写回 VS Code 的 `TextDocument`；预览编辑中的撤销与重做可回退工具栏操作，文件仍由 VS Code 保存。
 

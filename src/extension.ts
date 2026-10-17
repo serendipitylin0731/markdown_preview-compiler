@@ -164,6 +164,9 @@ async function handleMessage(state: Panel, message: any) {
       for (const other of panels) if (other !== state) post(other, { type: 'exportSettings', value: {
         ...shared, ...(other.uri.toString() === document.uri.toString() ? scoped : {})
       } });
+    } else if (message.type === 'saveDocument') {
+      const saved = await document.save();
+      post(state, { type: 'saveResult', success: saved });
     } else if (message.type === 'savePdf') {
       const name = path.basename(document.uri.fsPath).replace(/\.(md|markdown|mdown)$/i, '') + '.pdf';
       const target = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.joinPath(document.uri, '..', name), filters: { PDF: ['pdf'] } });
