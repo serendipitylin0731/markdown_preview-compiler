@@ -25,7 +25,8 @@ test.before(async () => {
             'sjtu-blue-cover':location.origin+'/assets/templates/sjtu-blue-cover.svg',
             'sjtu-red-outline':location.origin+'/assets/templates/sjtu-red-outline.svg',
             'sjtu-blue-outline':location.origin+'/assets/templates/sjtu-blue-outline.svg',
-            'sjtu-wordmark':location.origin+'/assets/templates/sjtu-wordmark.png'}};
+            'sjtu-wordmark':location.origin+'/assets/templates/sjtu-wordmark.png',
+            'sjtu-wordmark-blue':location.origin+'/assets/templates/sjtu-wordmark-blue.svg'}};
         </script><script src="/webview.js"></script></body></html>`);
       return;
     }
@@ -349,7 +350,22 @@ test('split preview offers mode switching inside the preview pane', async () => 
   await page.locator('button[data-action=visual]').click();
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'visual'));
   assert.ok(await page.locator('button[data-action=pdf]').isVisible());
-  assert.ok(await page.locator('button[data-action=source]').isVisible());
+  assert.equal(await page.locator('button[data-action=source]').count(), 0);
+  assert.equal(await page.locator('button[data-action=settings]').isVisible(), false);
+  assert.equal(await page.locator('button[data-action=export]').isVisible(), false);
+  await page.close();
+});
+
+test('PDF actions appear only while PDF preview is open', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  assert.equal(await page.locator('button[data-action=settings]').isVisible(), false);
+  await page.locator('button[data-action=pdf]').click();
+  assert.equal(await page.locator('button[data-action=settings]').isVisible(), true);
+  assert.equal(await page.locator('button[data-action=export]').isVisible(), true);
+  await page.locator('button[data-action=pdf]').click();
+  assert.equal(await page.locator('button[data-action=settings]').isVisible(), false);
   await page.close();
 });
 
@@ -384,6 +400,7 @@ test('PDF layout uses a dragged content rectangle and imported font', async () =
   const font = { id: 'sample', name: 'Custom.woff2', family: 'mdc-font-sample', url: base + '/fonts/KaTeX_SansSerif-Regular.woff2' };
   await deliver(page, { type: 'document', source: '# 内容\n\n`small`\n\n```txt\nblock\n```\n', version: 1,
     settings: {}, exportSettings: {}, templates: [], fonts: [font] });
+  await page.locator('button[data-action=pdf]').click();
   await page.locator('button[data-action=settings]').click();
   assert.equal(await page.locator('#set-marginTop').inputValue(), '24');
   assert.match(await page.locator('#marginText').textContent(), /上 24、右 22、下 24、左 22/);
@@ -541,6 +558,7 @@ test('cover fields and Ctrl wheel PDF zoom use the saved layout', async () => {
   assert.equal(await page.locator('#printHost .cover-subtitle').textContent(), '副标题');
   assert.equal(await page.locator('#printHost .cover-author').textContent(), '作者');
   assert.equal(await page.locator('#printHost .cover-date').count(), 0);
+  assert.equal(await page.locator('#printHost .cover-title').evaluate(el => getComputedStyle(el).fontWeight), '700');
   assert.ok(await page.locator('#printHost .cover-title').evaluate(el => {
     const page = el.closest('.print-page');
     return Math.abs(parseFloat(el.style.left) / page.clientWidth - 0.25) < 0.01;
@@ -556,6 +574,7 @@ test('margin and draggable cover previews follow the selected template and lands
   await page.goto(base + '/?mode=visual');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   await deliver(page, { type: 'document', source: '# 交大报告\n\n正文\n', version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
+  await page.locator('button[data-action=pdf]').click();
   await page.locator('button[data-action=settings]').click();
   assert.equal(await page.locator('input[name=template]').count(), 5);
   await page.locator('input[name=template][value=sjtu-red]').check();
@@ -576,6 +595,8 @@ test('margin and draggable cover previews follow the selected template and lands
   assert.match(sheets.coverBackground, /sjtu-blue-cover\.svg/);
   assert.match(await page.locator('#marginSheet .template-outline').getAttribute('src'), /sjtu-blue-outline\.svg/);
   assert.match(await page.locator('#coverSheet .template-outline').getAttribute('src'), /sjtu-blue-outline\.svg/);
+  assert.match(await page.locator('#marginSheet .template-wordmark').getAttribute('src'), /sjtu-wordmark-blue\.svg/);
+  assert.match(await page.locator('#coverSheet .template-wordmark').getAttribute('src'), /sjtu-wordmark-blue\.svg/);
   assert.ok(Math.abs(sheets.numberRight - 10 / 297 * 100) < .1);
   assert.ok(Math.abs(sheets.numberBottom - 7 / 210 * 100) < .1);
   const title = page.locator('[data-cover-field=title]');
@@ -613,7 +634,10 @@ test('landscape Shanghai Jiao Tong pages keep the page number below the template
       dateBottom: dateRect.bottom, coverOutlineTop: coverOutline.top,
       coverOutlineRatio: coverOutline.width / coverOutline.height,
       outlineRight: bodyRect.right - bodyOutline.right,
-      outlineBaseline: (bodyOutline.top + bodyOutline.height * 77 / 90 - bodyRect.top) / bodyRect.height };
+      outlineBaseline: (bodyOutline.top + bodyOutline.height * 67 / 68 - bodyRect.top) / bodyRect.height,
+      logoSource: body.querySelector('.template-wordmark').getAttribute('src'),
+      footerLine: body.querySelector('.template-footer-line').getBoundingClientRect().right,
+      outlineLineStart: bodyOutline.left + bodyOutline.width / 488 };
   });
   assert.ok(layout.count >= 2);
   assert.match(layout.coverBackground, /sjtu-red-cover\.svg/);
@@ -622,13 +646,40 @@ test('landscape Shanghai Jiao Tong pages keep the page number below the template
   assert.ok(Math.abs(layout.right - 10 * 96 / 25.4) < 2);
   assert.ok(Math.abs(layout.bottom - 7 * 96 / 25.4) < 2);
   assert.ok(layout.dateBottom < layout.coverOutlineTop, 'cover date should stay above the complete outline');
-  assert.ok(Math.abs(layout.coverOutlineRatio - 6) < .05, 'the outline should keep its aspect ratio');
+  assert.ok(Math.abs(layout.coverOutlineRatio - 488 / 68) < .05, 'the outline should keep its aspect ratio');
   assert.ok(Math.abs(layout.outlineRight / layout.width - .075) < .01);
   assert.ok(Math.abs(layout.outlineBaseline - 1290 / 1400) < .005);
+  assert.ok(Math.abs(layout.footerLine - layout.outlineLineStart) < 3, 'the extended line should meet the original left end');
+  assert.match(layout.logoSource, /sjtu-wordmark\.png/);
+  assert.equal(await page.locator('#printHost .print-content h1').first().evaluate(el => getComputedStyle(el).fontWeight), '700');
   if (process.env.MDC_SCREENSHOT) {
     await page.locator('#pdfPages canvas').first().screenshot({ path: process.env.MDC_SCREENSHOT + '-cover.png' });
     await page.locator('#pdfPages canvas').nth(1).screenshot({ path: process.env.MDC_SCREENSHOT + '-body.png' });
   }
+  await page.close();
+});
+
+test('blue Shanghai Jiao Tong seal is blue in the generated PDF preview', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '# 交大报告\n\n正文\n', version: 1, settings: {}, templates: [],
+    exportSettings: { orientation: 'landscape', template: 'sjtu-blue', cover: true } });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const color = await page.locator('#printHost .template-wordmark').first().evaluate(img => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 428; canvas.height = 141;
+    const context = canvas.getContext('2d');
+    context.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (pixels[i + 3] > 180) return [...pixels.slice(i, i + 4)];
+    }
+    return null;
+  });
+  assert.ok(color && color[2] > color[0] && color[1] > color[0], `expected blue seal, got ${color}`);
+  assert.match(await page.locator('#printHost .template-wordmark').first().getAttribute('src'), /sjtu-wordmark-blue\.svg/);
+  if (process.env.MDC_SCREENSHOT) await page.locator('#pdfPages canvas').first().screenshot({ path: process.env.MDC_SCREENSHOT + '-blue.png' });
   await page.close();
 });
 
@@ -637,6 +688,7 @@ test('a chosen template loads on the selected preview block range', async () => 
   await page.goto(base + '/?mode=visual');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   await deliver(page, { type: 'document', source: '第一段。\n\n第二段。\n', version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
+  await page.locator('button[data-action=pdf]').click();
   await page.locator('button[data-action=settings]').click();
   assert.equal(await page.locator('.setting-grid > :first-child strong').textContent(), '模板');
   await page.locator('input[name=template][value=academic]').check();
@@ -700,7 +752,7 @@ test('an existing inline formula edits in place without losing its Markdown sour
   await deliver(page, { type: 'document', source: '公式 $x+1$ 在正文中。\n', version: 1, settings: {}, exportSettings: {}, templates: [] });
   await page.locator('#documentBody .math-inline').dblclick();
   await page.locator('.direct-inline-math').fill('y+2');
-  await page.locator('button[data-action=settings]').click();
+  await page.locator('button[data-action=pdf]').click();
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
   const edit = await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'edit'));
   assert.match(edit.replacement, /公式 \$y\+2\$ 在正文中/);

@@ -2,5 +2,4 @@
   <rect width="1000" height="1400" fill="#fff"/>
   <rect width="1000" height="15" fill="#c8161e"/>
   <path d="M75 185H925" stroke="#c8161e" stroke-width="2"/>
-  <path d="M75 1300H925" stroke="#c8161e" stroke-width="2"/>
 </svg>

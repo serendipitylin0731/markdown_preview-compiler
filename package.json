@@ -2,7 +2,7 @@
   "name": "markdown-preview-compiler",
   "displayName": "Markdown Preview & Compiler",
   "description": "Markdown source, visual editing, live PDF preview and export.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "serendpity-lin",
   "repository": {
     "type": "git",
@@ -50,7 +50,7 @@
       },
       {
         "command": "markdownCompiler.pdf",
-        "title": "Markdown Compiler: PDF 对照预览"
+        "title": "Markdown Compiler: PDF 预览"
       },
       {
         "command": "markdownCompiler.export",

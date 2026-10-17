@@ -55,7 +55,7 @@ function webviewHtml(webview: vscode.Webview, document: vscode.TextDocument, mod
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'dist', 'katex.min.css'));
   const appCss = webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'dist', 'webview.css'));
   const directory = webview.asWebviewUri(vscode.Uri.joinPath(document.uri, '..')).toString();
-  const templateUrls = Object.fromEntries(['simple', 'academic', 'technical', 'cover', 'sjtu-red', 'sjtu-blue', 'sjtu-red-cover', 'sjtu-blue-cover', 'sjtu-red-outline', 'sjtu-blue-outline', 'sjtu-wordmark'].map(name =>
+  const templateUrls = Object.fromEntries(['simple', 'academic', 'technical', 'cover', 'sjtu-red', 'sjtu-blue', 'sjtu-red-cover', 'sjtu-blue-cover', 'sjtu-red-outline', 'sjtu-blue-outline', 'sjtu-wordmark', 'sjtu-wordmark-blue'].map(name =>
     [name, webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'assets', 'templates', `${name}.${name === 'sjtu-wordmark' ? 'png' : 'svg'}`)).toString()]));
   const boot = JSON.stringify({ mode, directory, templateUrls }).replace(/</g, '\\u003c');
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
@@ -70,7 +70,7 @@ async function openPanel(document: vscode.TextDocument, mode: Mode, column: vsco
   lastDocument = document.uri;
   const existing = [...panels].find(p => p.uri.toString() === document.uri.toString() && p.mode === mode);
   if (existing) { existing.panel.reveal(column); if (autoExport) post(existing, { type: 'exportNow' }); return existing; }
-  const panel = vscode.window.createWebviewPanel('markdownCompiler', `${path.basename(document.uri.fsPath)} · ${mode === 'visual' ? '预览编辑' : mode === 'pdf' ? 'PDF' : '预览'}`, column, {
+  const panel = vscode.window.createWebviewPanel('markdownCompiler', `${path.basename(document.uri.fsPath)} · ${mode === 'visual' ? '预览编辑' : mode === 'pdf' ? 'PDF 预览' : '预览'}`, column, {
     enableScripts: true, retainContextWhenHidden: true,
     localResourceRoots: [extensionContext.extensionUri, vscode.Uri.joinPath(document.uri, '..'), extensionContext.globalStorageUri]
   });

@@ -249,9 +249,9 @@ function blockMarkup(block: Block, index: number, editable: boolean) {
 }
 function toolbar() {
   return `<header class="toolbar"><div class="toolbar-group modes">
-    <button data-action="source">源码</button><button data-action="split" class="${mode === 'preview' ? 'selected' : ''}">分屏</button>
+    <button data-action="split" class="${mode === 'preview' ? 'selected' : ''}">分屏</button>
     <button data-action="visual" class="${mode === 'visual' ? 'selected' : ''}">预览编辑</button>
-    <button data-action="pdf" class="${mode === 'pdf' || visualPdf ? 'selected' : ''}">PDF 对照</button>
+    <button data-action="pdf" class="${mode === 'pdf' || visualPdf ? 'selected' : ''}">PDF 预览</button>
   </div><div class="toolbar-group visual-tools" style="display:${mode === 'visual' ? 'flex' : 'none'}">
     <select id="blockType" aria-label="段落类型"><option value="p">正文</option>${[1,2,3,4,5,6].map(n => `<option value="h${n}">标题 ${n}</option>`).join('')}</select>
     <button data-action="bold" title="加粗 Ctrl+B"><b>B</b></button><button data-action="italic" title="斜体 Ctrl+I"><i>I</i></button>
@@ -262,10 +262,15 @@ function toolbar() {
     <button data-action="deleteRow">−行</button><button data-action="deleteColumn">−列</button></span>
     <button data-action="inlineCode">行内代码</button><button data-action="code">代码块</button><button data-action="inlineMath">行内公式</button><button data-action="math">独立公式</button><button data-action="mermaid">图表</button>
     <button data-action="break">分页</button>
-  </div><div class="toolbar-group push">
+  </div><div class="toolbar-group push pdf-actions" ${mode === 'pdf' || visualPdf ? '' : 'hidden'}>
     <button data-action="settings">排版设置</button>
     <button data-action="export" class="primary">导出 PDF</button>
   </div></header>`;
+}
+function updatePdfActions() {
+  const actions = root.querySelector<HTMLElement>('.pdf-actions');
+  if (actions) actions.hidden = !(mode === 'pdf' || visualPdf);
+  root.querySelector<HTMLButtonElement>('button[data-action="pdf"]')?.classList.toggle('selected', mode === 'pdf' || visualPdf);
 }
 function pdfControls() {
   return `<div class="pdf-controls"><button data-action="refresh">更新 PDF</button>
@@ -672,14 +677,39 @@ function selectedTemplate() {
 function setTemplateArtwork(element: HTMLElement, templateId: string, cover = false) {
   const background = cover ? coverBackground(templateId) : templateBackground(templateId);
   const sjtu = templateId === 'sjtu-red' || templateId === 'sjtu-blue';
-  const logo = boot.templateUrls?.['sjtu-wordmark'];
-  element.style.backgroundImage = sjtu && logo ? `url("${logo}"), url("${background}")` : `url("${background}")`;
-  element.style.backgroundSize = sjtu && logo ? `auto ${cover ? '7%' : '5%'}, 100% 100%` : '100% 100%';
-  element.style.backgroundPosition = sjtu && logo ? `5% ${cover ? '5%' : '2.5%'}, center` : 'center';
+  element.style.backgroundImage = `url("${background}")`;
+  element.style.backgroundSize = '100% 100%';
+  element.style.backgroundPosition = 'center';
   element.style.backgroundRepeat = 'no-repeat';
+  const logoUrl = sjtu ? boot.templateUrls?.[templateId === 'sjtu-blue' ? 'sjtu-wordmark-blue' : 'sjtu-wordmark'] : undefined;
+  let logo = element.querySelector<HTMLImageElement>(':scope > .template-wordmark');
+  if (logoUrl) {
+    if (!logo) {
+      logo = document.createElement('img');
+      logo.className = 'template-wordmark';
+      logo.alt = '';
+      element.prepend(logo);
+    }
+    logo.src = logoUrl;
+    logo.style.height = cover ? '7%' : '5%';
+    logo.style.top = cover ? '5%' : '2.5%';
+  } else logo?.remove();
   const outlineUrl = sjtu ? boot.templateUrls?.[`${templateId}-outline`] : undefined;
   let outline = element.querySelector<HTMLImageElement>(':scope > .template-outline');
+  let line = element.querySelector<HTMLElement>(':scope > .template-footer-line');
   if (outlineUrl) {
+    const orientation = (document.getElementById('set-orientation') as HTMLSelectElement | null)?.value || exportSettings.orientation;
+    const outlineWidth = orientation === 'landscape' ? 50 : 68;
+    const lineBottom = cover ? 100 / 14 : 110 / 14;
+    if (!line) {
+      line = document.createElement('div');
+      line.className = 'template-footer-line';
+      element.prepend(line);
+    }
+    line.style.left = cover ? '7.5%' : '4.8%';
+    line.style.right = `${7.5 + outlineWidth * 487 / 488}%`;
+    line.style.bottom = `${lineBottom}%`;
+    line.style.backgroundColor = templateId === 'sjtu-blue' ? '#17618d' : '#c8161e';
     if (!outline) {
       outline = document.createElement('img');
       outline.className = 'template-outline';
@@ -687,8 +717,12 @@ function setTemplateArtwork(element: HTMLElement, templateId: string, cover = fa
       element.prepend(outline);
     }
     outline.src = outlineUrl;
-    outline.style.bottom = cover ? '6%' : '6.7%';
-  } else outline?.remove();
+    outline.style.width = `${outlineWidth}%`;
+    const [paperWidth, paperHeight] = paperSizeFor(
+      (document.getElementById('set-paper') as HTMLSelectElement | null)?.value || exportSettings.paper,
+      orientation);
+    outline.style.bottom = `${lineBottom - outlineWidth * paperWidth / paperHeight / 488}%`;
+  } else { outline?.remove(); line?.remove(); }
 }
 function updateMarginSheet() {
   const sheet = document.getElementById('marginSheet') as HTMLElement | null;
@@ -834,13 +868,12 @@ function templateOptions() {
   ];
   return all.map(t => {
     const background = t.url || templateBackground(t.id);
-    const branded = (t.id === 'sjtu-red' || t.id === 'sjtu-blue') && boot.templateUrls?.['sjtu-wordmark'];
-    const style = branded
-      ? `background-image:url(${JSON.stringify(boot.templateUrls['sjtu-wordmark'])}),url(${JSON.stringify(background)});background-size:auto 5%,100% 100%;background-position:5% 2.5%,center;background-repeat:no-repeat`
-      : `background-image:url(${JSON.stringify(background)})`;
+    const branded = t.id === 'sjtu-red' || t.id === 'sjtu-blue';
+    const logo = branded ? boot.templateUrls?.[t.id === 'sjtu-blue' ? 'sjtu-wordmark-blue' : 'sjtu-wordmark'] : undefined;
+    const style = `background-image:url(${JSON.stringify(background)})`;
     return `<label class="template-option">
     <input type="radio" name="template" value="${esc(t.id)}" ${exportSettings.template === t.id ? 'checked' : ''}>
-    <span class="template-thumb ${esc(t.id)}" style="${esc(style)}">${branded && boot.templateUrls?.[`${t.id}-outline`] ? `<img class="template-thumb-outline" src="${esc(boot.templateUrls[`${t.id}-outline`])}" alt="">` : ''}</span>
+    <span class="template-thumb ${esc(t.id)}" style="${esc(style)}">${logo ? `<img class="template-thumb-wordmark" src="${esc(logo)}" alt="">` : ''}${branded && boot.templateUrls?.[`${t.id}-outline`] ? `<span class="template-thumb-footer-line"></span><img class="template-thumb-outline" src="${esc(boot.templateUrls[`${t.id}-outline`])}" alt="">` : ''}</span>
     <span>${esc(t.name)}</span>${t.url ? `<button data-action="exportTemplate" data-id="${esc(t.id)}">导出正文</button>` : ''}
   </label>`;
   }).join('');
@@ -904,12 +937,13 @@ function onClick(event: MouseEvent) {
   if (['source','split','visual','pdf'].includes(action)) {
     if (action === 'pdf' && mode === 'visual') {
       visualPdf = !visualPdf; document.getElementById('workspace')!.classList.toggle('with-pdf', visualPdf);
+      updatePdfActions();
       if (!visualPdf) {
         root.classList.remove('pdf-full');
         const expand = root.querySelector<HTMLButtonElement>('button[data-action="fullPdf"]');
         if (expand) { expand.textContent = '展开 PDF'; expand.setAttribute('aria-pressed', 'false'); }
       }
-      button.classList.toggle('selected', visualPdf); if (visualPdf) schedulePdf(); return;
+      if (visualPdf) schedulePdf(); return;
     }
     post(action); return;
   }
@@ -1584,7 +1618,7 @@ window.addEventListener('message', (event: MessageEvent) => {
   } else if (message.type === 'scrollToLine') {
     if (mode === 'preview') { lastScrollLine = message.line; scrollToLine(message.line); }
   } else if (message.type === 'showPdf') {
-    visualPdf = true; document.getElementById('workspace')!.classList.add('with-pdf'); schedulePdf(true);
+    visualPdf = true; document.getElementById('workspace')!.classList.add('with-pdf'); updatePdfActions(); schedulePdf(true);
   } else if (message.type === 'exportNow') {
     void exportPdf();
   } else if (message.type === 'saveResult') toast(message.success ? 'Markdown 已保存' : 'Markdown 保存失败', !message.success);

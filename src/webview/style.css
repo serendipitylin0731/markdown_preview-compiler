@@ -30,7 +30,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .document-scroll { height: 100%; overflow: auto; }
 #documentBody { max-width: var(--editor-width); min-height: 100%; padding: 28px 36px max(80px, calc(var(--preview-height, 600px) / 3)); margin: auto; }
 .markdown-body { font-family: var(--editor-font); font-size: var(--editor-size); line-height: var(--editor-line); overflow-wrap: anywhere; }
-.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { line-height: 1.25; margin: 1.3em 0 .55em; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { line-height: 1.25; margin: 1.3em 0 .55em; font-weight: 700; }
 .markdown-body h1 { font-size: 2em; border-bottom: 1px solid var(--vscode-panel-border, #8886); padding-bottom: .25em; }
 .markdown-body h2 { font-size: 1.55em; border-bottom: 1px solid var(--vscode-panel-border, #8886); padding-bottom: .2em; }
 .markdown-body h3 { font-size: 1.3em; }
@@ -90,7 +90,9 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .margin-sheet { position: relative; height: 230px; background: white; border: 1px solid #9caab8; box-shadow: 0 2px 8px #0004; cursor: crosshair; touch-action: none; }
 .margin-selection { position: absolute; border: 2px solid #2376bb; background: #2376bb2b; pointer-events: none; }
 .margin-page-number { position: absolute; color: #596475; font: 10px system-ui, sans-serif; pointer-events: none; white-space: nowrap; }
-.template-outline { position: absolute; right: 7.5%; height: 8%; width: auto; max-width: none; pointer-events: none; user-select: none; }
+.template-wordmark { position: absolute; left: 5%; width: auto; max-width: 85%; object-fit: contain; pointer-events: none; user-select: none; }
+.template-footer-line { position: absolute; height: max(1px, 0.14%); transform: translateY(50%); pointer-events: none; }
+.template-outline { position: absolute; right: 7.5%; height: auto; max-width: none; pointer-events: none; user-select: none; }
 .margin-inputs { display: grid; grid-template-columns: repeat(4, minmax(60px, 1fr)); gap: 8px; width: min(430px, 100%); }
 .margin-inputs label { margin: 0; font-size: 12px; }
 .font-setting { grid-column: 1 / -1; }
@@ -114,7 +116,11 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .template-option { border: 1px solid var(--vscode-panel-border, #888); padding: 8px; border-radius: 5px; align-items: center; }
 .template-thumb { display: block; width: 80px; height: 110px; background: white; box-shadow: 0 1px 5px #0004; background-size: 100% 100%; background-position: center; }
 .template-thumb { position: relative; }
-.template-thumb-outline { position: absolute; right: 7.5%; bottom: 6.7%; height: 8%; width: auto; pointer-events: none; }
+.template-thumb-wordmark { position: absolute; left: 5%; top: 2.5%; height: 5%; width: auto; }
+.template-thumb-footer-line { position: absolute; left: 4.8%; right: 75.36%; bottom: 7.86%; height: 1px; background: currentColor; }
+.template-thumb.sjtu-red { color: #c8161e; }
+.template-thumb.sjtu-blue { color: #17618d; }
+.template-thumb-outline { position: absolute; right: 7.5%; bottom: 7.67%; width: 68%; height: auto; pointer-events: none; }
 .template-thumb.academic { border-top: 3px solid #9b7c62; border-bottom: 3px solid #9b7c62; }
 .template-thumb.technical { border-top: 6px solid #245482; border-bottom: 2px solid #245482; }
 #printHost { position: absolute; left: -100000px; top: 0; width: max-content; pointer-events: none; color-scheme: light; color: #20242a; background: white;
@@ -126,7 +132,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 #printHost .print-content :is(h1, h2, h3, h4, h5, h6, p, li, th, td, blockquote, pre, code, .hljs, .hljs *) { color: #20242a; }
 #printHost .print-content a { color: #155d94; }
 .print-content p { margin-bottom: var(--print-paragraph-gap); text-indent: var(--print-indent); }
-.print-content h1, .print-content h2, .print-content h3, .print-content h4, .print-content h5, .print-content h6 { break-after: avoid; font-family: var(--print-title-family); font-size: calc(1em * var(--print-heading-scale)); margin-top: calc(1em * var(--print-heading-gap)); }
+.print-content h1, .print-content h2, .print-content h3, .print-content h4, .print-content h5, .print-content h6 { break-after: avoid; font-family: var(--print-title-family); font-size: calc(1em * var(--print-heading-scale)); margin-top: calc(1em * var(--print-heading-gap)); font-weight: 700; }
 .print-content h1 { font-size: calc(2em * var(--print-heading-scale)); }
 .print-content h2 { font-size: calc(1.55em * var(--print-heading-scale)); }
 .print-content h3 { font-size: calc(1.3em * var(--print-heading-scale)); }
@@ -145,7 +151,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .print-page-number { right: 10mm; bottom: 7mm; text-align: right; font-size: 12px; }
 .print-cover-content { position: absolute; inset: 0; text-align: center; }
 .cover-field { position: absolute; width: 85%; transform: translate(-50%, -50%); overflow-wrap: anywhere; }
-.cover-title { font: 48px Georgia, serif; color: #24496a; }
+.cover-title { font: 700 48px Georgia, serif; color: #24496a; }
 .cover-subtitle { font: 25px Georgia, serif; color: #315577; }
 .cover-author, .cover-date { font: 17px system-ui; }
 .print-page.sjtu-red .cover-title, .print-page.sjtu-red .cover-subtitle { color: #b81422; }
