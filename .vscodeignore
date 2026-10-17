@@ -1,0 +1,12 @@
+src/**
+scripts/**
+test/**
+node_modules/**
+TASK.md
+tsconfig.json
+*.vsix
+.git/**
+.vscode/**
+.github/**
+.gitignore
+dist/*.map

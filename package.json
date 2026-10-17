@@ -1,0 +1,167 @@
+{
+  "name": "markdown-preview-compiler",
+  "displayName": "Markdown Preview & Compiler",
+  "description": "Markdown source, visual editing, live PDF preview and export.",
+  "version": "0.1.0",
+  "publisher": "serendpity-lin",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/serendipitylin0731/markdown_preview-compiler.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other",
+    "Formatters"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:markdown",
+    "onCommand:markdownCompiler.source",
+    "onCommand:markdownCompiler.split",
+    "onCommand:markdownCompiler.visual",
+    "onCommand:markdownCompiler.pdf",
+    "onCommand:markdownCompiler.export"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "markdownCompiler.source",
+        "title": "Markdown Compiler: 源码编辑"
+      },
+      {
+        "command": "markdownCompiler.split",
+        "title": "Markdown Compiler: 分屏预览"
+      },
+      {
+        "command": "markdownCompiler.visual",
+        "title": "Markdown Compiler: 所见即所得编辑"
+      },
+      {
+        "command": "markdownCompiler.pdf",
+        "title": "Markdown Compiler: PDF 对照预览"
+      },
+      {
+        "command": "markdownCompiler.export",
+        "title": "Markdown Compiler: 导出 PDF"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "markdownCompiler.split",
+          "when": "resourceLangId == markdown",
+          "group": "navigation@1"
+        },
+        {
+          "command": "markdownCompiler.visual",
+          "when": "resourceLangId == markdown",
+          "group": "navigation@2"
+        },
+        {
+          "command": "markdownCompiler.pdf",
+          "when": "resourceLangId == markdown",
+          "group": "navigation@3"
+        },
+        {
+          "command": "markdownCompiler.export",
+          "when": "resourceLangId == markdown",
+          "group": "navigation@4"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "markdownCompiler.split",
+        "key": "ctrl+alt+m",
+        "mac": "cmd+alt+m",
+        "when": "editorLangId == markdown"
+      },
+      {
+        "command": "markdownCompiler.visual",
+        "key": "ctrl+alt+v",
+        "mac": "cmd+alt+v",
+        "when": "editorLangId == markdown"
+      },
+      {
+        "command": "markdownCompiler.pdf",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "editorLangId == markdown"
+      }
+    ],
+    "configuration": {
+      "title": "Markdown Compiler",
+      "properties": {
+        "markdownCompiler.preview.fontFamily": {
+          "type": "string",
+          "default": "system-ui, sans-serif",
+          "description": "Preview font family"
+        },
+        "markdownCompiler.preview.fontSize": {
+          "type": "number",
+          "default": 16,
+          "minimum": 10,
+          "maximum": 40
+        },
+        "markdownCompiler.preview.lineHeight": {
+          "type": "number",
+          "default": 1.6,
+          "minimum": 1,
+          "maximum": 3
+        },
+        "markdownCompiler.preview.maxWidth": {
+          "type": "number",
+          "default": 860,
+          "minimum": 400,
+          "maximum": 1800
+        },
+        "markdownCompiler.preview.syncScroll": {
+          "type": "boolean",
+          "default": true
+        },
+        "markdownCompiler.pdf.autoUpdate": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "check": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.cjs",
+    "package": "npm run build && vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.6",
+    "highlight.js": "^11.11.1",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
+    "katex": "^0.19.0",
+    "markdown-it": "^14.1.0",
+    "markdown-it-anchor": "^9.2.0",
+    "markdown-it-footnote": "^4.0.0",
+    "markdown-it-task-lists": "^2.1.1",
+    "mermaid": "^11.17.2",
+    "pdfjs-dist": "^5.5.207",
+    "turndown": "^7.2.0",
+    "turndown-plugin-gfm": "^1.0.2"
+  },
+  "overrides": {
+    "mermaid": {
+      "katex": "^0.19.0"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.3.2",
+    "esbuild": "^0.25.5",
+    "playwright": "^1.57.0",
+    "typescript": "^5.8.3"
+  }
+}
