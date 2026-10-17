@@ -682,6 +682,45 @@ test('blue Shanghai Jiao Tong seal and motif are blue in the generated PDF previ
   await page.close();
 });
 
+test('all composed Shanghai Jiao Tong backgrounds keep the half-width motif on the right', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=preview');
+  const results = await page.evaluate(async () => {
+    const checks = [];
+    for (const color of ['red', 'blue']) for (const paper of ['a4', 'a5', 'letter']) {
+      for (const orientation of ['portrait', 'landscape']) for (const cover of [false, true]) {
+        const name = `sjtu-${color}-${paper}-${orientation}${cover ? '-cover' : ''}`;
+        const image = new Image();
+        image.src = location.origin + '/assets/templates/' + name + '.png';
+        await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+        const context = canvas.getContext('2d');
+        context.drawImage(image, 0, 0);
+        const x0 = Math.floor(canvas.width * .3), x1 = Math.floor(canvas.width * .93);
+        const y0 = Math.floor(canvas.height * .82), y1 = Math.floor(canvas.height * .915);
+        const pixels = context.getImageData(x0, y0, x1 - x0, y1 - y0).data;
+        let minX = canvas.width, count = 0;
+        for (let y = 0; y < y1 - y0; y++) for (let x = 0; x < x1 - x0; x++) {
+          const i = (y * (x1 - x0) + x) * 4;
+          const red = pixels[i], green = pixels[i + 1], blue = pixels[i + 2];
+          const ink = color === 'red' ? red > 130 && red > green * 1.5 && red > blue * 1.4 :
+            blue > red * 1.45 && green > red * 1.25;
+          if (ink) { count++; minX = Math.min(minX, x0 + x); }
+        }
+        checks.push({ name, minX: minX / canvas.width, count, orientation });
+      }
+    }
+    return checks;
+  });
+  assert.equal(results.length, 24);
+  for (const result of results) {
+    assert.ok(result.count > 200, `${result.name}: motif missing`);
+    assert.ok(result.minX > (result.orientation === 'landscape' ? .68 : .6), `${result.name}: motif is wider than half size`);
+  }
+  await page.close();
+});
+
 test('a chosen template loads on the selected preview block range', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=visual');

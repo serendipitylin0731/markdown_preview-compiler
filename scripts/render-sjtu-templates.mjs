@@ -25,7 +25,7 @@ try {
       const [paperWidth, paperHeight] = orientation === 'portrait' ? portrait : [...portrait].reverse();
       const width = Math.round(paperWidth * 144 / 25.4);
       const height = Math.round(paperHeight * 144 / 25.4);
-      const outlineWidth = orientation === 'landscape' ? 50 : 68;
+      const outlineWidth = orientation === 'landscape' ? 25 : 34;
       const lineBottom = cover ? 100 / 14 : 110 / 14;
       const outlineBottom = lineBottom - outlineWidth * paperWidth / paperHeight / 488;
       const lineRight = 7.5 + outlineWidth * 487 / 488;
