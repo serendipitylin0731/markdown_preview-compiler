@@ -16,6 +16,7 @@ function settings() {
     fontFamily: c.get<string>('preview.fontFamily', 'system-ui, sans-serif'),
     fontSize: c.get<number>('preview.fontSize', 16),
     lineHeight: c.get<number>('preview.lineHeight', 1.6),
+    paragraphGap: c.get<number>('preview.paragraphGap', 10),
     maxWidth: c.get<number>('preview.maxWidth', 860),
     syncScroll: c.get<boolean>('preview.syncScroll', true),
     autoUpdate: c.get<boolean>('pdf.autoUpdate', true)

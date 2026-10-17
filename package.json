@@ -112,6 +112,12 @@
           "minimum": 1,
           "maximum": 3
         },
+        "markdownCompiler.preview.paragraphGap": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "maximum": 48
+        },
         "markdownCompiler.preview.maxWidth": {
           "type": "number",
           "default": 860,

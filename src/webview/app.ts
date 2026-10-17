@@ -285,6 +285,7 @@ function renderDocument(preserve = true) {
   document.documentElement.style.setProperty('--editor-font', settings.fontFamily || 'system-ui, sans-serif');
   document.documentElement.style.setProperty('--editor-size', `${settings.fontSize || 16}px`);
   document.documentElement.style.setProperty('--editor-line', String(settings.lineHeight || 1.6));
+  document.documentElement.style.setProperty('--editor-paragraph-gap', `${settings.paragraphGap ?? 10}px`);
   document.documentElement.style.setProperty('--editor-width', `${settings.maxWidth || 860}px`);
 }
 function scrollToLine(line: number) {

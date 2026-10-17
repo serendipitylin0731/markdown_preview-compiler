@@ -2,6 +2,7 @@
   --editor-font: system-ui, sans-serif;
   --editor-size: 16px;
   --editor-line: 1.6;
+  --editor-paragraph-gap: 10px;
   --editor-width: 860px;
   color-scheme: light dark;
 }
@@ -32,7 +33,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .markdown-body h1 { font-size: 2em; border-bottom: 1px solid var(--vscode-panel-border, #8886); padding-bottom: .25em; }
 .markdown-body h2 { font-size: 1.55em; border-bottom: 1px solid var(--vscode-panel-border, #8886); padding-bottom: .2em; }
 .markdown-body h3 { font-size: 1.3em; }
-.markdown-body p { margin: .65em 0; }
+.markdown-body p { margin: var(--editor-paragraph-gap) 0; }
 .markdown-body img { max-width: 100%; height: auto; }
 .markdown-body img.missing-image { min-width: 150px; min-height: 30px; border: 1px dashed #a55; }
 .markdown-body pre { max-width: 100%; overflow-x: auto; padding: 12px 16px; border-radius: 5px; background: var(--vscode-textCodeBlock-background, #8882); }
