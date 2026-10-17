@@ -70,7 +70,7 @@ async function openPanel(document: vscode.TextDocument, mode: Mode, column: vsco
   lastDocument = document.uri;
   const existing = [...panels].find(p => p.uri.toString() === document.uri.toString() && p.mode === mode);
   if (existing) { existing.panel.reveal(column); if (autoExport) post(existing, { type: 'exportNow' }); return existing; }
-  const panel = vscode.window.createWebviewPanel('markdownCompiler', `${path.basename(document.uri.fsPath)} · ${mode === 'visual' ? '所见即所得' : mode === 'pdf' ? 'PDF' : '预览'}`, column, {
+  const panel = vscode.window.createWebviewPanel('markdownCompiler', `${path.basename(document.uri.fsPath)} · ${mode === 'visual' ? '预览编辑' : mode === 'pdf' ? 'PDF' : '预览'}`, column, {
     enableScripts: true, retainContextWhenHidden: true,
     localResourceRoots: [extensionContext.extensionUri, vscode.Uri.joinPath(document.uri, '..'), extensionContext.globalStorageUri]
   });
@@ -92,7 +92,8 @@ function post(state: Panel, message: unknown) { void state.panel.webview.postMes
 function templatesFor(state: Panel) {
   return extensionContext.globalState.get<any[]>('templates', []).map(template => ({
     id: template.id, name: template.name,
-    url: state.panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.globalStorageUri, template.file)).toString()
+    url: state.panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.globalStorageUri, template.file)).toString(),
+    coverUrl: template.coverFile ? state.panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.globalStorageUri, template.coverFile)).toString() : undefined
   }));
 }
 function fontsFor(state: Panel) {
@@ -122,8 +123,9 @@ async function handleMessage(state: Panel, message: any) {
   const document = await vscode.workspace.openTextDocument(state.uri);
   try {
     if (message.type === 'ready') {
+      const scoped = extensionContext.globalState.get<Record<string, any>>('templateSelections', {})[document.uri.toString()] || {};
       post(state, { type: 'document', source: document.getText(), version: document.version, settings: settings(document.uri),
-        exportSettings: extensionContext.globalState.get('exportSettings', {}), templates: templatesFor(state), fonts: fontsFor(state),
+        exportSettings: { ...extensionContext.globalState.get('exportSettings', {}), ...scoped }, templates: templatesFor(state), fonts: fontsFor(state),
         autoExport: state.autoExport });
       state.autoExport = false;
     } else if (message.type === 'edit') {
@@ -152,8 +154,16 @@ async function handleMessage(state: Panel, message: any) {
     } else if (message.type === 'pdf') {
       await showPdf(document);
     } else if (message.type === 'saveSettings') {
-      await extensionContext.globalState.update('exportSettings', message.value);
-      for (const other of panels) if (other !== state) post(other, { type: 'exportSettings', value: message.value });
+      const shared = { ...message.value };
+      const scoped = { baseTemplate: shared.baseTemplate, templateRanges: shared.templateRanges || [] };
+      delete shared.baseTemplate; delete shared.templateRanges;
+      await extensionContext.globalState.update('exportSettings', shared);
+      const selections = extensionContext.globalState.get<Record<string, any>>('templateSelections', {});
+      selections[document.uri.toString()] = scoped;
+      await extensionContext.globalState.update('templateSelections', selections);
+      for (const other of panels) if (other !== state) post(other, { type: 'exportSettings', value: {
+        ...shared, ...(other.uri.toString() === document.uri.toString() ? scoped : {})
+      } });
     } else if (message.type === 'savePdf') {
       const name = path.basename(document.uri.fsPath).replace(/\.(md|markdown|mdown)$/i, '') + '.pdf';
       const target = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.joinPath(document.uri, '..', name), filters: { PDF: ['pdf'] } });
@@ -164,20 +174,23 @@ async function handleMessage(state: Panel, message: any) {
       const action = await vscode.window.showInformationMessage(`PDF 已导出：${target.fsPath}`, '打开 PDF');
       if (action === '打开 PDF') await vscode.env.openExternal(target);
     } else if (message.type === 'importTemplate') {
-      const files = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'svg'] } });
+      const files = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: '选择正文图片，可附加一张封面图片', filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'svg'] } });
       if (!files?.[0]) return;
-      const bytes = await vscode.workspace.fs.readFile(files[0]);
-      if (bytes.length > 20 * 1024 * 1024) throw new Error('模板图片不能超过 20 MB');
+      if (files.length > 2) throw new Error('最多选择两张图片：正文图片在前，封面图片在后');
       await vscode.workspace.fs.createDirectory(extensionContext.globalStorageUri);
-      const ext = path.extname(files[0].fsPath).toLowerCase();
       const id = crypto.randomUUID();
-      const fileName = `template-${id}${ext}`;
-      const stored = vscode.Uri.joinPath(extensionContext.globalStorageUri, fileName);
-      await vscode.workspace.fs.writeFile(stored, bytes);
+      const storedFiles: string[] = [];
+      for (let index = 0; index < files.length; index++) {
+        const bytes = await vscode.workspace.fs.readFile(files[index]);
+        if (bytes.length > 20 * 1024 * 1024) throw new Error('模板图片不能超过 20 MB');
+        const fileName = `template-${id}-${index}${path.extname(files[index].fsPath).toLowerCase()}`;
+        await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(extensionContext.globalStorageUri, fileName), bytes);
+        storedFiles.push(fileName);
+      }
       const templates = extensionContext.globalState.get<any[]>('templates', []);
-      templates.push({ id, name: path.basename(files[0].fsPath), file: fileName });
+      templates.push({ id, name: path.basename(files[0].fsPath), file: storedFiles[0], coverFile: storedFiles[1] });
       await extensionContext.globalState.update('templates', templates);
-      for (const other of panels) post(other, { type: 'templates', templates: templatesFor(other) });
+      for (const other of panels) post(other, { type: 'templates', templates: templatesFor(other), importedId: other === state ? id : undefined });
     } else if (message.type === 'importFont') {
       const files = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { Fonts: ['ttf', 'otf', 'woff', 'woff2'] } });
       if (!files?.[0]) return;

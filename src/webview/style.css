@@ -7,6 +7,7 @@
   color-scheme: light dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body, #app { height: 100%; margin: 0; overflow: hidden; }
 body { font-family: var(--vscode-font-family, system-ui); color: var(--vscode-foreground); background: var(--vscode-editor-background); }
 button, select, input, textarea { font: inherit; }
@@ -38,6 +39,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .markdown-body img.missing-image { min-width: 150px; min-height: 30px; border: 1px dashed #a55; }
 .markdown-body pre { max-width: 100%; overflow-x: auto; padding: 12px 16px; border-radius: 5px; background: var(--vscode-textCodeBlock-background, #8882); box-shadow: none; text-shadow: none; }
 .markdown-body pre *, .print-content pre * { text-shadow: none !important; box-shadow: none !important; }
+.markdown-body pre code, .markdown-body pre code * { background: transparent !important; text-shadow: none !important; box-shadow: none !important; }
 .markdown-body code { font-family: var(--vscode-editor-font-family, monospace); font-size: .9em; }
 .markdown-body :not(pre)>code { padding: 1px 4px; border-radius: 3px; background: var(--vscode-textCodeBlock-background, #8882); }
 .markdown-body blockquote { margin: 1em 0; padding: 0 1em; border-left: 4px solid var(--vscode-textBlockQuote-border, #888); color: var(--vscode-textBlockQuote-foreground, inherit); }
@@ -49,6 +51,9 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .markdown-body .hljs { color: var(--vscode-editor-foreground); }
 .md-block { position: relative; }
 .md-block > .block-content { outline: none; min-height: 1em; }
+.direct-editor pre code { display: block; min-height: 1.4em; white-space: pre; outline: none; }
+.direct-math { display: block; width: 100%; min-height: 68px; margin: 7px 0 14px; padding: 8px; resize: vertical; font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-input-foreground, inherit); background: var(--vscode-input-background, transparent); border: 1px solid var(--vscode-panel-border, #8886); }
+.direct-inline-math { min-width: 7em; max-width: 100%; padding: 2px 4px; font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-input-foreground, inherit); background: var(--vscode-input-background, transparent); border: 1px solid var(--vscode-focusBorder, #007fd4); }
 .md-block:focus-within { border-radius: 3px; box-shadow: inset 3px 0 var(--vscode-focusBorder, #007fd4); }
 .md-block.protected { border: 1px dashed transparent; }
 .md-block.protected:hover { border-color: var(--vscode-panel-border, #888); }
@@ -90,6 +95,11 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .font-setting-row { display: flex; gap: 8px; align-items: flex-end; }
 .font-setting-row label { flex: 1; }
 .template-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.template-settings, .cover-position-settings { grid-column: 1 / -1; border-bottom: 1px solid var(--vscode-panel-border, #8886); margin-bottom: 12px; padding-bottom: 12px; }
+.template-settings p, .cover-position-settings p { font-size: 12px; opacity: .8; }
+.position-row { display: flex; align-items: center; gap: 12px; }
+.position-row > span { width: 52px; }
+.position-row label { flex: 1; }
 .template-option { border: 1px solid var(--vscode-panel-border, #888); padding: 8px; border-radius: 5px; align-items: center; }
 .template-thumb { display: block; width: 80px; height: 110px; background: white; box-shadow: 0 1px 5px #0004; background-size: cover; }
 .template-thumb.academic { border-top: 3px solid #9b7c62; border-bottom: 3px solid #9b7c62; }
@@ -120,9 +130,11 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .print-header { left: var(--margin-left); right: var(--margin-right); top: 9px; }
 .print-footer { left: var(--margin-left); right: var(--margin-right); bottom: 9px; }
 .print-page-number { right: 10mm; bottom: 7mm; text-align: right; font-size: 12px; }
-.print-cover-content { position: absolute; left: 10%; right: 10%; top: 31%; text-align: center; }
-.print-cover-content h1 { font: 48px Georgia, serif; color: #24496a; }
-.print-cover-content p { margin-top: 80px; font: 17px system-ui; }
+.print-cover-content { position: absolute; inset: 0; text-align: center; }
+.cover-field { position: absolute; width: 85%; transform: translate(-50%, -50%); overflow-wrap: anywhere; }
+.cover-title { font: 48px Georgia, serif; color: #24496a; }
+.cover-subtitle { font: 25px Georgia, serif; color: #315577; }
+.cover-author, .cover-date { font: 17px system-ui; }
 .print-toc { margin-bottom: 30px; }
 .print-toc h2 { text-align: center; }
 .print-toc div { padding: 5px 0; border-bottom: 1px dotted #ccc; }

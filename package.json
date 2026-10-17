@@ -46,7 +46,7 @@
       },
       {
         "command": "markdownCompiler.visual",
-        "title": "Markdown Compiler: 所见即所得编辑"
+        "title": "Markdown Compiler: 预览编辑"
       },
       {
         "command": "markdownCompiler.pdf",

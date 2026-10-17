@@ -36,7 +36,7 @@ md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
   state.pos = end + 1; return true;
 });
 md.renderer.rules.math_inline = (tokens, i) => {
-  try { return katex.renderToString(tokens[i].content, { throwOnError: false, trust: false, output: 'html' }); }
+  try { return `<span class="math-inline" data-tex="${esc(tokens[i].content)}">${katex.renderToString(tokens[i].content, { throwOnError: false, trust: false, output: 'html' })}</span>`; }
   catch { return '<span class="render-error">公式无法渲染</span>'; }
 };
 md.block.ruler.before('fence', 'math_block', (state, start, end, silent) => {
@@ -78,8 +78,9 @@ md.renderer.rules.html_block = (tokens, i) => {
 const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-', emDelimiter: '*' });
 turndown.use(gfm);
 turndown.addRule('math', {
-  filter: node => node.nodeType === 1 && node.classList?.contains('katex'),
+  filter: node => node.nodeType === 1 && (node.classList?.contains('math-inline') || node.classList?.contains('katex')),
   replacement: (_content, node) => {
+    if (node.classList?.contains('math-inline')) return `$${node.getAttribute('data-tex') || ''}$`;
     const annotation = node.querySelector('annotation[encoding="application/x-tex"]');
     return annotation ? `$${annotation.textContent}$` : node.textContent || '';
   }
@@ -96,7 +97,9 @@ let exportSettings: any = {
   header: '', footer: '', pageNumbers: true, firstLineIndent: 0, align: 'left',
   fontFamily: '', titleFontFamily: '', headingScale: 1,
   headingGap: 1, pageNumberFormat: 'fraction',
-  codeBackground: '#f4f6f8', tableHeaderBackground: '#eef2f6', tableBorderColor: '#aab4bf'
+  codeBackground: '#f4f6f8', tableHeaderBackground: '#eef2f6', tableBorderColor: '#aab4bf',
+  coverSubtitle: '', coverAuthor: '', coverDate: true,
+  coverPositions: { title: [50, 36], subtitle: [50, 47], author: [50, 73], date: [50, 81] }
 };
 function normalizeExportSettings() {
   const ranges: any = {
@@ -138,6 +141,13 @@ let fontsReady: Promise<void> = Promise.resolve();
 let activeBlock = -1;
 let editSerial = 0;
 let savedRange: Range | null = null;
+let savedTableCell: HTMLElement | null = null;
+let editHistory: Array<{ before: string; after: string }> = [];
+let redoHistory: Array<{ before: string; after: string }> = [];
+let ownEdits = new Map<number, string>();
+let historyDirection: 'undo' | 'redo' | null = null;
+let queuedHistory: 'undo' | 'redo' | null = null;
+let templateBrush: string | null = null;
 const root = document.getElementById('app')!;
 
 function esc(value: unknown) { return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!)); }
@@ -177,6 +187,8 @@ function parseBlocks(input: string): Block[] {
     const end = offsets[endLine] ?? input.length;
     const raw = input.slice(start, end);
     let protectedBlock = /^\s*(?:`{3,}|~{3,}|\$\$|<!--|<[^!]|\[[^\]]+\]:)/.test(raw) || /<[^>]+>/.test(raw);
+    const kind = /^\s*(`{3,}|~{3,})/.test(raw) && !/^\s*(`{3,}|~{3,})\s*mermaid\b/i.test(raw) ? 'code' : /^\s*\$\$/.test(raw) ? 'math' : '';
+    if (kind) protectedBlock = false;
     const next = spans[i + 1]?.index ?? tokens.length;
     let html = md.renderer.render(tokens.slice(index, next), md.options, env);
     if (/^\s*(:::|!!!)\s*\w+/m.test(raw)) {
@@ -184,10 +196,12 @@ function parseBlocks(input: string): Block[] {
       html = '<div class="render-warning">该扩展指令暂不支持可视化渲染，请使用源码编辑。</div>' + html;
     }
     if (html.includes('class="footnotes"')) protectedBlock = true;
-    result.push({ start, end, raw, html: DOMPurify.sanitize(html), editable: !protectedBlock, line });
+    result.push({ start, end, raw, html: DOMPurify.sanitize(html), editable: !protectedBlock, line, kind });
   }
   if (!result.length && input.trim()) result.push({ start: 0, end: input.length, raw: input,
     html: DOMPurify.sanitize(md.render(input)), editable: false, line: 0 });
+  if (!result.length && !input.trim()) result.push({ start: 0, end: input.length, raw: input,
+    html: '<p><br></p>', editable: true, line: 0 });
   return result;
 }
 function localizeImages(container: HTMLElement) {
@@ -218,6 +232,14 @@ async function renderMermaid(container: HTMLElement) {
 }
 function blockMarkup(block: Block, index: number, editable: boolean) {
   const sourceButton = !block.editable && editable ? '<button class="edit-source" data-action="editSource" title="编辑这段 Markdown 源码">编辑源码</button>' : '';
+  if (editable && block.kind === 'code') {
+    const match = block.raw.match(/^\s*(`{3,}|~{3,})([^\n]*)\n?([\s\S]*?)\n?\s*\1\s*$/);
+    return `<section class="md-block direct-editor" data-index="${index}" data-line="${block.line}"><div class="block-content markdown-body"><pre class="hljs"><code contenteditable="true" spellcheck="false" data-direct="code">${esc(match?.[3] || '')}</code></pre></div></section>`;
+  }
+  if (editable && block.kind === 'math') {
+    const value = block.raw.replace(/^\s*\$\$\s*/, '').replace(/\s*\$\$\s*$/, '');
+    return `<section class="md-block direct-editor" data-index="${index}" data-line="${block.line}"><div class="block-content markdown-body">${block.html}<textarea class="direct-math" data-direct="math" spellcheck="false" aria-label="直接编辑公式">${esc(value)}</textarea></div></section>`;
+  }
   return `<section class="md-block ${block.editable ? '' : 'protected'}" data-index="${index}" data-line="${block.line}">
     ${sourceButton}<div class="block-content markdown-body" ${editable && block.editable ? 'contenteditable="true" spellcheck="true"' : ''}>${block.html}</div>
     </section>`;
@@ -225,7 +247,7 @@ function blockMarkup(block: Block, index: number, editable: boolean) {
 function toolbar() {
   return `<header class="toolbar"><div class="toolbar-group modes">
     <button data-action="source">源码</button><button data-action="split" class="${mode === 'preview' ? 'selected' : ''}">分屏</button>
-    <button data-action="visual" class="${mode === 'visual' ? 'selected' : ''}">所见即所得</button>
+    <button data-action="visual" class="${mode === 'visual' ? 'selected' : ''}">预览编辑</button>
     <button data-action="pdf" class="${mode === 'pdf' || visualPdf ? 'selected' : ''}">PDF 对照</button>
   </div><div class="toolbar-group visual-tools" style="display:${mode === 'visual' ? 'flex' : 'none'}">
     <select id="blockType" aria-label="段落类型"><option value="p">正文</option>${[1,2,3,4,5,6].map(n => `<option value="h${n}">标题 ${n}</option>`).join('')}</select>
@@ -233,12 +255,12 @@ function toolbar() {
     <button data-action="strike" title="删除线"><s>S</s></button><button data-action="link">链接</button>
     <button data-action="ul">列表</button><button data-action="ol">编号</button><button data-action="quote">引用</button>
     <button data-action="image">图片</button><button data-action="table">表格</button>
-    <button data-action="row">+行</button><button data-action="column">+列</button>
-    <button data-action="deleteRow">−行</button><button data-action="deleteColumn">−列</button>
-    <button data-action="code">代码</button><button data-action="math">公式</button><button data-action="mermaid">图表</button>
+    <span id="tableTools" class="toolbar-group" hidden><button data-action="row">+行</button><button data-action="column">+列</button>
+    <button data-action="deleteRow">−行</button><button data-action="deleteColumn">−列</button></span>
+    <button data-action="inlineCode">行内代码</button><button data-action="code">代码块</button><button data-action="inlineMath">行内公式</button><button data-action="math">独立公式</button><button data-action="mermaid">图表</button>
     <button data-action="break">分页</button>
   </div><div class="toolbar-group push">
-    <button data-action="settings">排版设置</button><button data-action="template">模板</button>
+    <button data-action="settings">排版设置</button>
     <button data-action="export" class="primary">导出 PDF</button>
   </div></header>`;
 }
@@ -247,7 +269,6 @@ function pdfControls() {
     <label><input type="checkbox" id="autoUpdate" ${autoUpdate ? 'checked' : ''}>自动更新</label>
     <button data-action="prev">‹</button><span id="pageInfo">0 / 0</span><button data-action="next">›</button>
     <button data-action="zoomOut">−</button><span id="zoomLabel">100%</span><button data-action="zoomIn">+</button>
-    <button data-action="fitWidth">适合宽度</button><button data-action="fitPage">适合页面</button>
     <button data-action="breakMarkers" aria-pressed="${showBreaks}">${showBreaks ? '隐藏分页标记' : '显示分页标记'}</button>
     ${mode === 'visual' ? '<button data-action="fullPdf" aria-pressed="false">展开 PDF</button>' : ''}</div><div id="pdfStatus" class="pdf-status"></div><div id="pdfPages" class="pdf-pages"></div>`;
 }
@@ -262,6 +283,14 @@ function buildShell() {
   root.addEventListener('input', onInput);
   root.addEventListener('keydown', onKeydown);
   root.addEventListener('focusin', onFocus);
+  root.addEventListener('dblclick', onDoubleClick);
+  document.addEventListener('selectionchange', updateTableTools);
+  root.querySelector('#documentBody')?.addEventListener('mouseup', applyTemplateToSelection);
+  root.querySelector('#pdfPages')?.addEventListener('wheel', event => {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    setScale(pdfScale * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
+  }, { passive: false });
   root.querySelector('.document-scroll')?.addEventListener('scroll', onDocumentScroll, { passive: true });
   const documentPane = root.querySelector<HTMLElement>('.document-scroll');
   if (documentPane) new ResizeObserver(() => documentPane.style.setProperty('--preview-height', `${documentPane.clientHeight}px`)).observe(documentPane);
@@ -327,12 +356,100 @@ function onFocus(event: FocusEvent) {
     const select = document.getElementById('blockType') as HTMLSelectElement;
     if (select) select.value = /^h[1-6]$/.test(type) ? type : 'p';
   }
+  updateTableTools();
 }
 function onInput(event: Event) {
   const target = event.target as HTMLElement;
-  if (target.closest('.md-block .block-content')) scheduleBlockSave(target.closest('.md-block') as HTMLElement);
+  const block = target.closest('.md-block') as HTMLElement | null;
+  if (block && target.closest('.block-content')) {
+    if (target.matches('.direct-inline-math')) {
+      const wrapper = target.closest<HTMLElement>('.math-inline');
+      if (wrapper) wrapper.dataset.tex = (target as HTMLInputElement).value;
+    }
+    if (target.matches('[data-direct="math"]')) {
+      const preview = block.querySelector<HTMLElement>('.math-block');
+      if (preview) preview.innerHTML = katex.renderToString((target as HTMLTextAreaElement).value, { displayMode: true, throwOnError: false, trust: false, output: 'html' });
+    }
+    if (!target.matches('[data-direct]')) renderTypedMarkdown(block, event as InputEvent);
+    scheduleBlockSave(block);
+  }
+}
+function renderTypedMarkdown(block: HTMLElement, event: InputEvent) {
+  if (event.isComposing || ![' ', '*', '_', '~', '`', '$', '\n', ')', ']'].includes(event.data || '') && event.inputType !== 'insertParagraph') return;
+  const content = block.querySelector<HTMLElement>('.block-content');
+  const only = content?.firstElementChild;
+  const plainParagraph = only && only === content.lastElementChild && only.tagName === 'P' &&
+    [...only.childNodes].every(node => node.nodeType !== 1 || (node as Element).tagName === 'BR');
+  const plainContent = content && !content.children.length;
+  if (!plainParagraph && !plainContent) return;
+  const raw = ((plainParagraph ? only : content)?.textContent || '').replace(/\u00a0/g, ' ');
+  if (raw.includes('**') && !/\*\*[^*]+\*\*/.test(raw)) return;
+  if (raw.includes('~~') && !/~~[^~]+~~/.test(raw)) return;
+  if (!/^(?:#{1,6} |[-*+] |\d+\. |>|```|\$\$)|(?:\*\*[^*]+\*\*|\*[^*]+\*|~~[^~]+~~|`[^`]+`|\$[^$]+\$|\[[^\]]+\]\([^)]+\))/.test(raw)) return;
+  const rendered = DOMPurify.sanitize(md.render(raw));
+  if (!rendered || rendered === content.innerHTML) return;
+  content.innerHTML = rendered;
+  const selection = window.getSelection();
+  const range = document.createRange();
+  const caretTarget = content.querySelector('li:last-child, h1:last-child, h2:last-child, h3:last-child, h4:last-child, h5:last-child, h6:last-child, p:last-child') || content.lastElementChild || content;
+  range.selectNodeContents(caretTarget); range.collapse(false);
+  selection?.removeAllRanges(); selection?.addRange(range);
+}
+function updateTableTools() {
+  const cell = (window.getSelection()?.anchorNode?.nodeType === 1 ? window.getSelection()?.anchorNode as Element : window.getSelection()?.anchorNode?.parentElement)?.closest?.('#documentBody .block-content td, #documentBody .block-content th') as HTMLElement | null;
+  savedTableCell = mode === 'visual' ? cell : null;
+  const tools = document.getElementById('tableTools');
+  if (tools) tools.hidden = !savedTableCell;
+}
+function applyTemplateToSelection() {
+  if (!templateBrush || mode === 'pdf') return;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+  const range = selection.getRangeAt(0);
+  const elementFor = (node: Node) => (node.nodeType === 1 ? node as Element : node.parentElement)?.closest?.('#documentBody .md-block') as HTMLElement | null;
+  const first = elementFor(range.startContainer), last = elementFor(range.endContainer);
+  if (!first || !last) return;
+  const start = Math.min(Number(first.dataset.index), Number(last.dataset.index));
+  const end = Math.max(Number(first.dataset.index), Number(last.dataset.index));
+  exportSettings.templateRanges = [{ start, end, id: templateBrush }];
+  templateBrush = null;
+  pdfDirty = true; post('saveSettings', { value: exportSettings }); schedulePdf();
+  toast(`模板已应用到第 ${start + 1} 至 ${end + 1} 段`);
+}
+function onDoubleClick(event: MouseEvent) {
+  if (mode !== 'visual') return;
+  const link = (event.target as HTMLElement).closest('#documentBody a[href]') as HTMLAnchorElement | null;
+  if (link) { event.preventDefault(); editLink(link); }
+  const math = (event.target as HTMLElement).closest('#documentBody .math-inline') as HTMLElement | null;
+  if (math && !math.querySelector('input')) {
+    event.preventDefault();
+    const input = document.createElement('input');
+    input.className = 'direct-inline-math'; input.setAttribute('aria-label', '直接编辑行内公式');
+    input.value = math.dataset.tex || '';
+    math.replaceChildren(input); input.focus(); input.select();
+    input.addEventListener('blur', () => {
+      math.dataset.tex = input.value;
+      math.innerHTML = DOMPurify.sanitize(katex.renderToString(input.value, { throwOnError: false, trust: false, output: 'html' }));
+      const block = math.closest('.md-block') as HTMLElement | null;
+      if (block) scheduleBlockSave(block);
+    }, { once: true });
+  }
+}
+function editLink(link: HTMLAnchorElement) {
+  showDialog('编辑链接', '<label>文字<input id="linkText"></label><label>地址<input id="linkUrl"></label><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="removeLink">删除链接</button><button data-action="updateLink" class="primary">保存</button></div>', { link });
+  (document.getElementById('linkText') as HTMLInputElement).value = link.textContent || '';
+  (document.getElementById('linkUrl') as HTMLInputElement).value = link.getAttribute('href') || '';
 }
 function onKeydown(event: KeyboardEvent) {
+  if (mode === 'visual' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+    event.preventDefault();
+    if (editTimer) { window.clearTimeout(editTimer); editTimer = undefined; const block = selectedBlockElement(); if (block) saveBlock(block); }
+    if (pendingEdit) { queuedHistory = event.shiftKey ? 'redo' : 'undo'; return; }
+    changeHistory(event.shiftKey ? 'redo' : 'undo'); return;
+  }
+  if (mode === 'visual' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+    event.preventDefault(); changeHistory('redo'); return;
+  }
   if ((event.ctrlKey || event.metaKey) && ['b', 'i'].includes(event.key.toLowerCase()) && mode === 'visual') {
     event.preventDefault(); document.execCommand(event.key.toLowerCase() === 'b' ? 'bold' : 'italic');
     const block = selectedBlockElement(); if (block) scheduleBlockSave(block);
@@ -344,12 +461,37 @@ function onKeydown(event: KeyboardEvent) {
       event.preventDefault(); document.execCommand(event.shiftKey ? 'outdent' : 'indent'); scheduleBlockSave(block);
     }
   }
+  if (event.key === 'Backspace' && mode === 'visual' && !event.isComposing) {
+    const block = selectedBlockElement();
+    const content = block?.querySelector<HTMLElement>('.block-content');
+    const selection = window.getSelection();
+    if (!content || !selection?.isCollapsed || block?.classList.contains('direct-editor')) return;
+    if (content.children.length > 1 || (content.children.length === 1 && !/^(P|H[1-6])$/.test(content.firstElementChild?.tagName || ''))) return;
+    const range = selection.getRangeAt(0).cloneRange();
+    const before = range.cloneRange(); before.selectNodeContents(content); before.setEnd(range.startContainer, range.startOffset);
+    if (before.toString().length) return;
+    const index = Number(block?.dataset.index);
+    const current = blocks[index], previous = blocks[index - 1];
+    if (!current || !previous) return;
+    event.preventDefault();
+    window.clearTimeout(editTimer); editTimer = undefined;
+    const empty = !content.textContent?.trim();
+    const start = empty ? previous.end : Math.max(previous.start, previous.end - 1);
+    const end = empty ? current.end : current.start;
+    submitEdit(start, end, source.slice(start, end), '');
+  }
 }
 function scheduleBlockSave(element: HTMLElement) {
   window.clearTimeout(editTimer);
   editTimer = window.setTimeout(() => saveBlock(element), 350);
 }
 function serializeBlock(element: HTMLElement, original: Block) {
+  if (original.kind === 'code') {
+    const opener = original.raw.match(/^\s*(`{3,}|~{3,})[^\n]*/)?.[0] || '```text';
+    const fence = opener.trimStart().match(/^(`{3,}|~{3,})/)?.[0] || '```';
+    return `${opener}\n${element.querySelector('[data-direct="code"]')?.textContent || ''}\n${fence}${original.raw.endsWith('\n') ? '\n' : ''}`;
+  }
+  if (original.kind === 'math') return `$$\n${(element.querySelector('[data-direct="math"]') as HTMLTextAreaElement)?.value || ''}\n$$${original.raw.endsWith('\n') ? '\n' : ''}`;
   const copy = element.querySelector<HTMLElement>('.block-content')!.cloneNode(true) as HTMLElement;
   copy.querySelectorAll<HTMLImageElement>('img[data-original-src]').forEach(img => {
     img.setAttribute('src', img.dataset.originalSrc || '');
@@ -368,6 +510,7 @@ function serializeBlock(element: HTMLElement, original: Block) {
   return markdown + (original.raw.endsWith('\n') ? '\n' : '');
 }
 function saveBlock(element: HTMLElement) {
+  editTimer = undefined;
   if (pendingEdit) { window.setTimeout(() => saveBlock(element), 250); return; }
   const index = Number(element.dataset.index);
   const original = blocks[index];
@@ -375,11 +518,57 @@ function saveBlock(element: HTMLElement) {
   const replacement = serializeBlock(element, original);
   if (replacement === original.raw) return;
   pendingEdit = { id: ++editSerial, index, element, replacement, snapshot: element.innerHTML };
-  post('edit', { id: pendingEdit.id, start: original.start, end: original.end, expected: original.raw, replacement });
+  submitEdit(original.start, original.end, original.raw, replacement, pendingEdit.id);
   toast('正在同步 Markdown…');
+}
+function submitEdit(start: number, end: number, expected: string, replacement: string, id = ++editSerial) {
+  ownEdits.set(id, source);
+  post('edit', { id, start, end, expected, replacement });
+}
+function changeHistory(direction: 'undo' | 'redo') {
+  const stack = direction === 'undo' ? editHistory : redoHistory;
+  const entry = stack.at(-1);
+  if (!entry || pendingEdit) return;
+  const expected = direction === 'undo' ? entry.after : entry.before;
+  const replacement = direction === 'undo' ? entry.before : entry.after;
+  if (source !== expected) { toast('文档已在其他位置修改，无法继续撤销', true); return; }
+  stack.pop();
+  (direction === 'undo' ? redoHistory : editHistory).push(entry);
+  historyDirection = direction;
+  submitEdit(0, source.length, source, replacement);
+}
+function rebaseTemplateRanges(previous: string, next: string) {
+  const ranges = exportSettings.templateRanges as Array<{ start: number; end: number; id: string }> | undefined;
+  if (!ranges?.length || previous === next) return;
+  const oldBlocks = blocks;
+  const newBlocks = parseBlocks(next);
+  let prefix = 0;
+  while (prefix < previous.length && prefix < next.length && previous[prefix] === next[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < previous.length - prefix && suffix < next.length - prefix &&
+    previous[previous.length - 1 - suffix] === next[next.length - 1 - suffix]) suffix++;
+  const oldChangeEnd = previous.length - suffix;
+  const delta = next.length - previous.length;
+  const mapOffset = (offset: number) => offset < prefix ? offset : offset >= oldChangeEnd ? offset + delta : prefix;
+  const blockAt = (offset: number) => {
+    const exact = newBlocks.findIndex(block => offset >= block.start && offset < block.end);
+    return exact >= 0 ? exact : Math.max(0, newBlocks.findLastIndex(block => block.start <= offset));
+  };
+  const updated = ranges.map(range => {
+    const first = oldBlocks[range.start], last = oldBlocks[range.end];
+    if (!first || !last) return null;
+    const start = blockAt(mapOffset(first.start));
+    const end = blockAt(mapOffset(Math.max(last.start, last.end - 1)));
+    return { start: Math.min(start, end), end: Math.max(start, end), id: range.id };
+  }).filter(Boolean);
+  if (JSON.stringify(updated) !== JSON.stringify(ranges)) {
+    exportSettings.templateRanges = updated;
+    post('saveSettings', { value: exportSettings });
+  }
 }
 function applySource(newSource: string, newVersion: number, own = false) {
   if (newSource === source) { version = newVersion; return; }
+  rebaseTemplateRanges(source, newSource);
   source = newSource; version = newVersion; pdfDirty = true;
   if (own && pendingEdit?.element?.isConnected) {
     const nextBlocks = parseBlocks(source);
@@ -405,7 +594,30 @@ function insertMarkdown(text: string) {
   const block = blocks[activeBlock];
   const offset = block?.end ?? source.length;
   const prefix = offset > 0 && !source.slice(0, offset).endsWith('\n\n') ? '\n' : '';
-  post('edit', { id: ++editSerial, start: offset, end: offset, expected: '', replacement: prefix + text + '\n' });
+  submitEdit(offset, offset, '', prefix + text + '\n');
+}
+function insertInline(markdown: string) {
+  const selection = window.getSelection();
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  const block = selectedBlockElement();
+  const selected = selection?.toString().trim();
+  if (block?.querySelector('.block-content[contenteditable]') && range) {
+    const content = selected || (markdown.startsWith('`') ? '代码' : 'E = mc^2');
+    let node: Node;
+    if (markdown.startsWith('`')) {
+      const code = document.createElement('code'); code.textContent = content; node = code;
+    } else {
+      const fragment = document.createElement('span');
+      fragment.className = 'math-inline';
+      fragment.dataset.tex = content;
+      fragment.innerHTML = DOMPurify.sanitize(katex.renderToString(content, { throwOnError: false, trust: false, output: 'html' }));
+      node = fragment;
+    }
+    range.deleteContents(); range.insertNode(node);
+    range.setStartAfter(node); range.collapse(true);
+    selection?.removeAllRanges(); selection?.addRange(range);
+    scheduleBlockSave(block);
+  } else insertMarkdown(markdown);
 }
 function editProtected(index: number) {
   const block = blocks[index]; if (!block) return;
@@ -486,6 +698,7 @@ function bindMarginSheet() {
 function settingsDialog() {
   marginDraft = Object.fromEntries(['marginTop','marginRight','marginBottom','marginLeft'].map(key => [key, exportSettings[key]]));
   showDialog('PDF 排版设置', `<div class="setting-grid">
+    <div class="template-settings"><strong>模板</strong><div class="template-list">${templateOptions()}</div><button data-action="importTemplate">导入图片模板</button><p>选择正文图片，可再选一张封面图片。应用模板后可在文档预览中框选文字，将模板用于该范围。</p></div>
     <label>纸张<select id="set-paper"><option value="a4">A4</option><option value="a5">A5</option><option value="letter">Letter</option></select></label>
     <label>方向<select id="set-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
     <div class="margin-editor"><strong>页边距</strong><p>点击确定左上角，右下角自动对称；拖动可调整，靠近对称位置时自动吸附</p><div id="marginSheet" class="margin-sheet" role="img" aria-label="点击或拖动调整 PDF 正文区域"><div id="marginSelection" class="margin-selection"></div></div><p id="marginText"></p>
@@ -502,22 +715,23 @@ function settingsDialog() {
     <label>页码格式<select id="set-pageNumberFormat"><option value="fraction">当前页 / 总页数</option><option value="number">仅页码</option></select></label>
     <label><input id="set-pageNumbers" type="checkbox" ${exportSettings.pageNumbers ? 'checked' : ''}>显示页码</label>
     <label><input id="set-cover" type="checkbox" ${exportSettings.cover ? 'checked' : ''}>封面页</label>
+    ${settingField('coverSubtitle','封面副标题')}${settingField('coverAuthor','封面作者')}
+    <label><input id="set-coverDate" type="checkbox" ${exportSettings.coverDate !== false ? 'checked' : ''}>显示封面日期</label>
+    <div class="cover-position-settings"><strong>封面文字位置（页面百分比）</strong><p>横向和纵向分别以左上角为 0、右下角为 100。</p>${['title','subtitle','author','date'].map((key, i) => `<div class="position-row"><span>${['标题','副标题','作者','日期'][i]}</span><label>横向<input id="pos-${key}-x" type="number" min="0" max="100" value="${esc(exportSettings.coverPositions?.[key]?.[0] ?? 50)}"></label><label>纵向<input id="pos-${key}-y" type="number" min="0" max="100" value="${esc(exportSettings.coverPositions?.[key]?.[1] ?? 50)}"></label></div>`).join('')}</div>
     <label><input id="set-toc" type="checkbox" ${exportSettings.toc ? 'checked' : ''}>自动目录</label>
     </div><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="saveSettings" class="primary">应用</button></div>`);
   for (const key of ['paper','orientation','align','pageNumberFormat']) (document.getElementById('set-' + key) as HTMLSelectElement).value = exportSettings[key];
   updateMarginSheet(); bindMarginSheet();
 }
-function templateDialog() {
+function templateOptions() {
   const all = [
     { id: 'simple', name: '简洁文档' }, { id: 'academic', name: '学术报告' }, { id: 'technical', name: '技术文档' }, ...templates
   ];
-  showDialog('选择正文模板', `<div class="template-list">${all.map(t => `<label class="template-option">
+  return all.map(t => `<label class="template-option">
     <input type="radio" name="template" value="${esc(t.id)}" ${exportSettings.template === t.id ? 'checked' : ''}>
     <span class="template-thumb ${esc(t.id)}" ${t.url ? `style="background-image:url('${esc(t.url)}')"` : ''}></span>
-    <span>${esc(t.name)}</span>${t.url ? `<button data-action="exportTemplate" data-id="${esc(t.id)}">导出</button>` : ''}
-  </label>`).join('')}</div><div class="dialog-actions">
-    <button data-action="importTemplate">导入图片模板</button><button data-action="cancelDialog">取消</button>
-    <button data-action="chooseTemplate" class="primary">应用</button></div>`);
+    <span>${esc(t.name)}</span>${t.url ? `<button data-action="exportTemplate" data-id="${esc(t.id)}">导出正文</button>` : ''}
+  </label>`).join('');
 }
 function onChange(event: Event) {
   const target = event.target as HTMLInputElement;
@@ -558,9 +772,11 @@ function onClick(event: MouseEvent) {
     const href = link.getAttribute('href') || '';
     if (mode === 'visual' && link.closest('.md-block')) {
       event.preventDefault();
-      showDialog('编辑链接', '<label>文字<input id="linkText"></label><label>地址<input id="linkUrl"></label><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="removeLink">删除链接</button><button data-action="updateLink" class="primary">保存</button></div>', { link });
-      (document.getElementById('linkText') as HTMLInputElement).value = link.textContent || '';
-      (document.getElementById('linkUrl') as HTMLInputElement).value = href;
+      toast('双击编辑链接；Ctrl+单击打开链接');
+      if (event.ctrlKey || event.metaKey) {
+        if (/^(https?:|mailto:)/i.test(href)) post('openLink', { url: href });
+        else if (href && !href.startsWith('#')) post('openLocalLink', { href });
+      }
       return;
     }
     if (/^(https?:|mailto:)/i.test(href)) { event.preventDefault(); post('openLink', { url: href }); }
@@ -583,27 +799,34 @@ function onClick(event: MouseEvent) {
     post(action); return;
   }
   if (action === 'settings') return settingsDialog();
-  if (action === 'template') return templateDialog();
   if (action === 'cancelDialog') return closeDialog();
   if (action === 'importTemplate') return post('importTemplate');
   if (action === 'importFont') return post('importFont');
   if (action === 'exportTemplate') return post('exportTemplate', { id: button.dataset.id });
-  if (action === 'chooseTemplate') {
-    exportSettings.template = (document.querySelector('input[name=template]:checked') as HTMLInputElement)?.value || 'simple';
-    pdfDirty = true; post('saveSettings', { value: exportSettings }); closeDialog(); schedulePdf(); return;
-  }
   if (action === 'saveSettings') {
-    for (const key of ['paper','orientation','align','fontFamily','titleFontFamily','codeBackground','tableHeaderBackground','tableBorderColor','header','footer','pageNumberFormat']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).value;
+    for (const key of ['paper','orientation','align','fontFamily','titleFontFamily','codeBackground','tableHeaderBackground','tableBorderColor','header','footer','pageNumberFormat','coverSubtitle','coverAuthor']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).value;
+    const chosenTemplate = (document.querySelector('input[name=template]:checked') as HTMLInputElement)?.value || 'simple';
+    if (chosenTemplate !== exportSettings.template) {
+      exportSettings.baseTemplate = exportSettings.template;
+      exportSettings.templateRanges = [];
+      templateBrush = mode !== 'pdf' ? chosenTemplate : null;
+    }
+    exportSettings.template = chosenTemplate;
     Object.assign(exportSettings, marginDraft);
     for (const key of ['fontSize','lineHeight','paragraphGap','firstLineIndent','headingScale','headingGap']) exportSettings[key] = Number((document.getElementById('set-' + key) as HTMLInputElement).value);
-    for (const key of ['pageNumbers','cover','toc']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).checked;
+    for (const key of ['pageNumbers','cover','coverDate','toc']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).checked;
+    exportSettings.coverPositions = Object.fromEntries(['title','subtitle','author','date'].map(key => [key, ['x','y'].map(axis => {
+      const value = Number((document.getElementById(`pos-${key}-${axis}`) as HTMLInputElement).value);
+      return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 50;
+    })]));
     normalizeExportSettings();
-    pdfDirty = true; post('saveSettings', { value: exportSettings }); closeDialog(); schedulePdf(); return;
+    pdfDirty = true; post('saveSettings', { value: exportSettings }); closeDialog(); schedulePdf();
+    if (templateBrush) toast('模板已选中；在文档预览中框选正文，即可将模板应用到该范围。');
+    return;
   }
   if (action === 'saveSource') {
     const block = blocks[dialogData?.index];
-    if (block) post('edit', { id: ++editSerial, start: block.start, end: block.end, expected: block.raw,
-      replacement: (document.getElementById('sourceText') as HTMLTextAreaElement).value });
+    if (block) submitEdit(block.start, block.end, block.raw, (document.getElementById('sourceText') as HTMLTextAreaElement).value);
     closeDialog(); return;
   }
   if (action === 'editSource') return editProtected(Number(button.closest('.md-block')?.getAttribute('data-index')));
@@ -613,8 +836,6 @@ function onClick(event: MouseEvent) {
   if (action === 'next') return jumpPage(pdfPage + 1);
   if (action === 'zoomOut') return setScale(pdfScale / 1.2);
   if (action === 'zoomIn') return setScale(pdfScale * 1.2);
-  if (action === 'fitWidth') return fitPdf('width');
-  if (action === 'fitPage') return fitPdf('page');
   if (action === 'breakMarkers') {
     showBreaks = !showBreaks; root.classList.toggle('hide-breaks', !showBreaks);
     button.textContent = showBreaks ? '隐藏分页标记' : '显示分页标记'; button.setAttribute('aria-pressed', String(showBreaks));
@@ -632,6 +853,8 @@ function onClick(event: MouseEvent) {
   }
   if (action === 'link') {
     const selected = window.getSelection();
+    const existing = (selected?.anchorNode?.nodeType === 1 ? selected.anchorNode as Element : selected?.anchorNode?.parentElement)?.closest?.('a[href]') as HTMLAnchorElement | null;
+    if (existing) return editLink(existing);
     savedRange = selected?.rangeCount ? selected.getRangeAt(0).cloneRange() : null;
     const selectedText = selected?.toString() || '';
     showDialog('插入链接', '<label>文字<input id="linkText" placeholder="链接文字"></label><label>地址<input id="linkUrl" placeholder="https://example.com"></label><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="insertLink" class="primary">插入</button></div>');
@@ -698,7 +921,9 @@ function onClick(event: MouseEvent) {
   if (action === 'ol') return insertMarkdown('1. 列表项');
   if (action === 'quote') return insertMarkdown('> 引用内容');
   if (action === 'table') return insertMarkdown('| 列 1 | 列 2 |\n| --- | --- |\n| 内容 | 内容 |');
+  if (action === 'inlineCode') return insertInline('`代码`');
   if (action === 'code') return insertMarkdown('```text\n代码\n```');
+  if (action === 'inlineMath') return insertInline('$E = mc^2$');
   if (action === 'math') return insertMarkdown('$$\nE = mc^2\n$$');
   if (action === 'mermaid') return insertMarkdown('```mermaid\ngraph TD\n  A[开始] --> B[结束]\n```');
   if (action === 'break') {
@@ -707,24 +932,24 @@ function onClick(event: MouseEvent) {
   }
   if (action === 'breakBefore') {
     const block = blocks[activeBlock]; const offset = block?.start ?? 0;
-    post('edit', { id: ++editSerial, start: offset, end: offset, expected: '', replacement: '<!-- pagebreak -->\n\n' });
+    submitEdit(offset, offset, '', '<!-- pagebreak -->\n\n');
     closeDialog(); return;
   }
   if (action === 'breakAfter') { insertMarkdown('<!-- pagebreak -->'); closeDialog(); return; }
   if (action === 'removeBreak') {
     const block = blocks[activeBlock];
     if (block && /^\s*<!--\s*pagebreak\s*-->\s*$/i.test(block.raw))
-      post('edit', { id: ++editSerial, start: block.start, end: block.end, expected: block.raw, replacement: '' });
+      submitEdit(block.start, block.end, block.raw, '');
     else toast('请先选择一个手动分页标记', true);
     closeDialog(); return;
   }
   if (action === 'clearBreaks') {
     const next = source.replace(/^\s*<!--\s*pagebreak\s*-->\s*\n?/gim, '');
-    post('edit', { id: ++editSerial, start: 0, end: source.length, expected: source, replacement: next });
+    submitEdit(0, source.length, source, next);
     closeDialog(); return;
   }
   if (['row', 'column', 'deleteRow', 'deleteColumn'].includes(action)) {
-    const block = selectedBlockElement() || document.querySelector<HTMLElement>(`#documentBody .md-block[data-index="${activeBlock}"]`);
+    const block = savedTableCell?.closest('.md-block') as HTMLElement | null;
     const table = block?.querySelector('table');
     if (!table) { toast('请先将光标放入表格', true); return; }
     if (action === 'row') {
@@ -733,10 +958,10 @@ function onClick(event: MouseEvent) {
     } else if (action === 'column') {
       table.querySelectorAll('tr').forEach(row => { const cell = document.createElement(row.parentElement?.tagName === 'THEAD' ? 'th' : 'td'); cell.textContent = ''; row.append(cell); });
     } else if (action === 'deleteRow') {
-      const row = (window.getSelection()?.anchorNode?.parentElement?.closest('tr') as HTMLElement) || table.querySelector('tbody tr:last-child');
+      const row = (savedTableCell?.closest('tr') as HTMLElement) || table.querySelector('tbody tr:last-child');
       if (row && table.querySelectorAll('tr').length > 2) row.remove();
     } else {
-      const cell = window.getSelection()?.anchorNode?.parentElement?.closest('td,th');
+      const cell = savedTableCell;
       const index = cell ? [...cell.parentElement!.children].indexOf(cell) : table.querySelector('tr')!.children.length - 1;
       if (table.querySelector('tr')!.children.length > 1) table.querySelectorAll('tr').forEach(row => row.children[index]?.remove());
     }
@@ -748,30 +973,32 @@ const mmToPx = (mm: number) => mm * 96 / 25.4;
 function paperSize() {
   return paperSizeFor(exportSettings.paper, exportSettings.orientation);
 }
-function templateBackground() {
-  const custom = templates.find(t => t.id === exportSettings.template);
+function templateBackground(templateId = exportSettings.template) {
+  const custom = templates.find(t => t.id === templateId);
   if (custom?.url) return custom.url;
-  if (boot.templateUrls?.[exportSettings.template]) return boot.templateUrls[exportSettings.template];
+  if (boot.templateUrls?.[templateId]) return boot.templateUrls[templateId];
   const variants: any = {
     simple: '<rect x="0" y="0" width="100%" height="100%" fill="white"/>',
     academic: '<rect x="0" y="0" width="100%" height="100%" fill="white"/><path d="M42 70H958M42 1330H958" stroke="#9b7c62" stroke-width="2"/><rect x="42" y="77" width="24" height="3" fill="#9b7c62"/>',
     technical: '<rect x="0" y="0" width="100%" height="100%" fill="white"/><rect x="0" y="0" width="1000" height="20" fill="#245482"/><path d="M50 1325H950" stroke="#245482" stroke-width="2"/><circle cx="950" cy="54" r="7" fill="#245482"/>'
   };
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">${variants[exportSettings.template] || variants.simple}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">${variants[templateId] || variants.simple}</svg>`;
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
 function coverBackground() {
+  const custom = templates.find(t => t.id === exportSettings.template);
+  if (custom?.coverUrl) return custom.coverUrl;
   if (boot.templateUrls?.cover) return boot.templateUrls.cover;
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400"><rect width="100%" height="100%" fill="#fdfbf7"/><path d="M90 260H910M90 1100H910" stroke="#315577" stroke-width="5"/><rect x="90" y="270" width="72" height="8" fill="#315577"/></svg>';
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
-function makePage(number: number, total = 0, cover = false): HTMLElement {
+function makePage(number: number, total = 0, cover = false, templateId = exportSettings.template): HTMLElement {
   const [width, height] = paperSize();
   const page = document.createElement('div');
   page.className = 'print-page' + (cover ? ' cover-page' : '');
   page.style.width = `${mmToPx(width)}px`;
   page.style.height = `${mmToPx(height)}px`;
-  page.style.backgroundImage = `url("${cover ? coverBackground() : templateBackground()}")`;
+  page.style.backgroundImage = `url("${cover ? coverBackground() : templateBackground(templateId)}")`;
   page.style.setProperty('--margin-top', `${mmToPx(exportSettings.marginTop)}px`);
   page.style.setProperty('--margin-right', `${mmToPx(exportSettings.marginRight)}px`);
   page.style.setProperty('--margin-bottom', `${mmToPx(exportSettings.marginBottom)}px`);
@@ -829,10 +1056,25 @@ async function paginate() {
   const title = blocks.find(b => /^#\s+/.test(b.raw))?.raw.replace(/^#\s+/, '').trim() || '文档';
   if (exportSettings.cover) {
     const cover = makePage(1, 0, true);
-    cover.querySelector('.print-cover-content')!.innerHTML = `<h1>${esc(title)}</h1><p>${esc(new Date().toLocaleDateString('zh-CN'))}</p>`;
+    const fields = [
+      ['title', title], ['subtitle', exportSettings.coverSubtitle],
+      ['author', exportSettings.coverAuthor], ['date', exportSettings.coverDate !== false ? new Date().toLocaleDateString('zh-CN') : '']
+    ];
+    cover.querySelector('.print-cover-content')!.innerHTML = fields.filter(([, value]) => value).map(([key, value]) => {
+      const position = exportSettings.coverPositions?.[key] || [50, 50];
+      const x = Math.max(0, Math.min(100, Number(position[0]) || 0));
+      const y = Math.max(0, Math.min(100, Number(position[1]) || 0));
+      return `<div class="cover-field cover-${key}" style="left:${x}%;top:${y}%">${esc(value)}</div>`;
+    }).join('');
     host.append(cover); pages.push(cover);
   }
-  let page = makePage(pages.length + 1);
+  const templateForBlock = (index: number) => {
+    const ranges = exportSettings.templateRanges || [];
+    if (!ranges.length) return exportSettings.template;
+    return ranges.find((range: any) => index >= range.start && index <= range.end)?.id || exportSettings.baseTemplate || exportSettings.template;
+  };
+  let currentTemplate = templateForBlock(0);
+  let page = makePage(pages.length + 1, 0, false, currentTemplate);
   host.append(page); pages.push(page);
   let content = page.querySelector<HTMLElement>('.print-content')!;
   if (exportSettings.toc) {
@@ -845,7 +1087,7 @@ async function paginate() {
     content.append(toc);
   }
   const nextPage = (line = 0, type = 'automatic') => {
-    page = makePage(pages.length + 1);
+    page = makePage(pages.length + 1, 0, false, currentTemplate);
     host.append(page); pages.push(page);
     content = page.querySelector<HTMLElement>('.print-content')!;
     boundaries.push({ line, page: pages.length, type });
@@ -853,6 +1095,12 @@ async function paginate() {
   const contentHeight = () => content.clientHeight;
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
     const block = blocks[blockIndex];
+    const desiredTemplate = templateForBlock(blockIndex);
+    if (desiredTemplate !== currentTemplate) {
+      currentTemplate = desiredTemplate;
+      if (content.children.length) nextPage(block.line);
+      else page.style.backgroundImage = `url("${templateBackground(currentTemplate)}")`;
+    }
     if (/^\s*<!--\s*pagebreak\s*-->\s*$/i.test(block.raw)) {
       nextPage(blocks[blockIndex + 1]?.line ?? block.line, 'manual'); continue;
     }
@@ -1129,14 +1377,6 @@ function setScale(value: number) {
   pdfScale = Math.max(0.3, Math.min(3, value));
   void renderPdfPages();
 }
-async function fitPdf(kind: 'width' | 'page') {
-  if (!pdfPreviewImages.length) return;
-  const width = pdfPreviewSize[0] * 72 / 25.4;
-  const height = pdfPreviewSize[1] * 72 / 25.4;
-  const container = document.getElementById('pdfPages')!;
-  setScale(kind === 'width' ? (container.clientWidth - 34) / width :
-    Math.min((container.clientWidth - 34) / width, (container.clientHeight - 34) / height));
-}
 async function exportPdf() {
   if (!pdfBytes || pdfBusy || pdfDirty) {
     autoExport = true; schedulePdf(true); return;
@@ -1191,17 +1431,36 @@ window.addEventListener('message', (event: MessageEvent) => {
       applySource(message.source, message.version, true);
     } else applySource(message.source, message.version);
   } else if (message.type === 'editAck') {
+    const before = ownEdits.get(message.id);
+    ownEdits.delete(message.id);
+    if (before !== undefined && before !== message.source && !historyDirection) {
+      editHistory.push({ before, after: message.source });
+      if (editHistory.length > 100) editHistory.shift();
+      redoHistory = [];
+    }
+    if (historyDirection) historyDirection = null;
     if (pendingEdit?.id === message.id) applySource(message.source, message.version, true);
     else applySource(message.source, message.version);
+    if (queuedHistory) { const direction = queuedHistory; queuedHistory = null; changeHistory(direction); }
     toast('Markdown 已同步');
   } else if (message.type === 'conflict') {
-    pendingEdit = null; applySource(message.source, message.version); toast('文件已在其他位置修改，页面已更新', true);
+    pendingEdit = null; ownEdits.clear(); editHistory = []; redoHistory = []; queuedHistory = null; historyDirection = null;
+    applySource(message.source, message.version); toast('文件已在其他位置修改，页面已更新', true);
   } else if (message.type === 'settings') {
     settings = message.value; pdfDirty = true; renderDocument(); schedulePdf();
   } else if (message.type === 'exportSettings') {
     exportSettings = { ...exportSettings, ...message.value }; normalizeExportSettings(); pdfDirty = true; schedulePdf();
   } else if (message.type === 'templates') {
-    templates = message.templates; templateDialog();
+    templates = message.templates;
+    const list = document.querySelector<HTMLElement>('.template-settings .template-list');
+    if (list) {
+      list.innerHTML = templateOptions();
+      if (message.importedId) {
+        const selected = [...list.querySelectorAll<HTMLInputElement>('input[name="template"]')].find(input => input.value === message.importedId);
+        if (selected) selected.checked = true;
+        if (templates.find(t => t.id === message.importedId)?.coverUrl) (document.getElementById('set-cover') as HTMLInputElement).checked = true;
+      }
+    }
   } else if (message.type === 'fonts') {
     setFonts(message.fonts || [], message.importedId);
   } else if (message.type === 'scrollToLine') {

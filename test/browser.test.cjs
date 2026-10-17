@@ -381,6 +381,7 @@ test('PDF layout uses a dragged content rectangle and imported font', async () =
   assert.equal(await page.locator('#set-marginTop').inputValue(), '24');
   assert.match(await page.locator('#marginText').textContent(), /上 24、右 22、下 24、左 22/);
   assert.equal(await page.locator('#set-fontFamily option').count(), 2);
+  await page.locator('#marginSheet').scrollIntoViewIfNeeded();
   const sheet = await page.locator('#marginSheet').boundingBox();
   await page.mouse.click(sheet.x + 18, sheet.y + 26);
   assert.equal(await page.locator('#set-marginLeft').inputValue(), await page.locator('#set-marginRight').inputValue());
@@ -388,9 +389,11 @@ test('PDF layout uses a dragged content rectangle and imported font', async () =
   await page.locator('#set-marginRight').fill('36');
   await page.locator('#set-marginRight').dispatchEvent('change');
   assert.equal(await page.locator('#set-marginRight').inputValue(), '36');
-  await page.mouse.move(sheet.x + 18, sheet.y + 26);
+  await page.locator('#marginSheet').scrollIntoViewIfNeeded();
+  const dragSheet = await page.locator('#marginSheet').boundingBox();
+  await page.mouse.move(dragSheet.x + 18, dragSheet.y + 26);
   await page.mouse.down();
-  await page.mouse.move(sheet.x + sheet.width - 25, sheet.y + sheet.height - 36, { steps: 5 });
+  await page.mouse.move(dragSheet.x + dragSheet.width - 25, dragSheet.y + dragSheet.height - 36, { steps: 5 });
   await page.mouse.up();
   await page.locator('#set-fontFamily').selectOption(font.family);
   await page.locator('button[data-action=saveSettings]').click();
@@ -434,7 +437,7 @@ test('visual link and image dialogs write safe Markdown targets', async () => {
   await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
   const source = '[旧链接](https://example.com/)\n\n![旧说明](./image.png)\n';
   await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
-  await page.locator('#documentBody a').first().click();
+  await page.locator('#documentBody a').first().dblclick();
   await page.locator('#linkText').fill('新链接');
   await page.locator('#linkUrl').fill('https://example.org/');
   await page.locator('button[data-action=updateLink]').click();
@@ -451,5 +454,167 @@ test('visual link and image dialogs write safe Markdown targets', async () => {
   await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').length >= 2, { timeout: 5000 });
   const imageEdit = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit')[1]);
   assert.match(imageEdit.replacement, /!\[新说明\]\(\.\/new-image\.png\)/);
+  await page.close();
+});
+
+test('toolbar table edits can be undone, and table controls follow the caret', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = '正文\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n';
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  assert.equal(await page.locator('#tableTools').isVisible(), false);
+  await page.locator('#documentBody td').first().click();
+  await page.locator('#tableTools').waitFor({ state: 'visible' });
+  await page.locator('button[data-action=row]').click();
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
+  const edit = await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'edit'));
+  const updated = source.slice(0, edit.start) + edit.replacement + source.slice(edit.end);
+  assert.equal((updated.match(/\|\s*\|\s*\|/g) || []).length, 1);
+  await deliver(page, { type: 'documentChanged', source: updated, version: 2 });
+  await deliver(page, { type: 'editAck', id: edit.id, source: updated, version: 2 });
+  await page.locator('#documentBody td').first().click();
+  await page.keyboard.press('Control+z');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').length === 2);
+  const undo = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit')[1]);
+  assert.equal(undo.expected, updated);
+  assert.equal(undo.replacement, source);
+  await page.close();
+});
+
+test('code and display math edit in place and typed Markdown renders', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = '普通文字\n\n```js\nconst a = 1;\n```\n\n$$\na+b\n$$\n';
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.locator('[data-direct=code]').click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' // 注释');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
+  const codeEdit = await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'edit'));
+  assert.match(codeEdit.replacement, /const a = 1; \/\/ 注释/);
+  const updated = source.slice(0, codeEdit.start) + codeEdit.replacement + source.slice(codeEdit.end);
+  await deliver(page, { type: 'documentChanged', source: updated, version: 2 });
+  await deliver(page, { type: 'editAck', id: codeEdit.id, source: updated, version: 2 });
+  await page.locator('[data-direct=math]').fill('a+b=c');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').length >= 2);
+  const mathEdit = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit')[1]);
+  assert.match(mathEdit.replacement, /\$\$\na\+b=c\n\$\$/);
+  assert.ok(await page.locator('#documentBody .math-block .katex').count());
+  await page.close();
+
+  const typed = await browser.newPage();
+  await typed.goto(base + '/?mode=visual');
+  await deliver(typed, { type: 'document', source: '正文\n', version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await typed.locator('#documentBody p').click();
+  await typed.keyboard.press('Control+A');
+  await typed.keyboard.type('**加粗**');
+  await typed.waitForFunction(() => document.querySelector('#documentBody strong'));
+  assert.equal(await typed.locator('#documentBody strong').textContent(), '加粗');
+  await typed.close();
+
+  const heading = await browser.newPage();
+  await heading.goto(base + '/?mode=visual');
+  await deliver(heading, { type: 'document', source: '', version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await heading.locator('#documentBody p').click();
+  await heading.keyboard.type('# 标题');
+  assert.equal(await heading.locator('#documentBody h1').textContent(), '标题');
+  await heading.close();
+});
+
+test('cover fields and Ctrl wheel PDF zoom use the saved layout', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '# 标题\n\n正文\n', version: 1, settings: {}, templates: [],
+    exportSettings: { cover: true, coverSubtitle: '副标题', coverAuthor: '作者', coverDate: false,
+      coverPositions: { title: [25, 30], subtitle: [40, 45], author: [60, 70], date: [50, 80] } } });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await page.locator('#printHost .cover-subtitle').textContent(), '副标题');
+  assert.equal(await page.locator('#printHost .cover-author').textContent(), '作者');
+  assert.equal(await page.locator('#printHost .cover-date').count(), 0);
+  assert.ok(await page.locator('#printHost .cover-title').evaluate(el => {
+    const page = el.closest('.print-page');
+    return Math.abs(parseFloat(el.style.left) / page.clientWidth - 0.25) < 0.01;
+  }));
+  assert.equal(await page.locator('button[data-action=fitWidth]').count(), 0);
+  await page.locator('#pdfPages').dispatchEvent('wheel', { ctrlKey: true, deltaY: -100 });
+  await page.waitForFunction(() => document.getElementById('zoomLabel')?.textContent === '110%');
+  await page.close();
+});
+
+test('a chosen template loads on the selected preview block range', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '第一段。\n\n第二段。\n', version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
+  await page.locator('button[data-action=settings]').click();
+  assert.equal(await page.locator('.setting-grid > :first-child strong').textContent(), '模板');
+  await page.locator('input[name=template][value=academic]').check();
+  await page.locator('button[data-action=saveSettings]').click();
+  await page.locator('#documentBody p').first().selectText();
+  await page.locator('#documentBody p').first().dispatchEvent('mouseup');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'saveSettings').some(m => m.value.templateRanges?.length));
+  const saved = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'saveSettings').findLast(m => m.value.templateRanges?.length).value);
+  assert.deepEqual(saved.templateRanges, [{ start: 0, end: 0, id: 'academic' }]);
+  assert.equal(saved.baseTemplate, 'simple');
+  await deliver(page, { type: 'documentChanged', source: '前言。\n\n第一段。\n\n第二段。\n', version: 2 });
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'saveSettings').some(m => m.value.templateRanges?.[0]?.start === 1));
+  await page.close();
+});
+
+test('Backspace removes a paragraph after its last text is deleted', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = '第一段。\n\n第二段。\n';
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.locator('#documentBody p').nth(1).selectText();
+  await page.keyboard.press('Backspace');
+  await page.keyboard.press('Backspace');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
+  const edit = await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'edit'));
+  assert.equal(edit.replacement, '');
+  assert.equal(source.slice(0, edit.start) + source.slice(edit.end), '第一段。\n');
+  await page.close();
+});
+
+test('inline code and math buttons format the selected text', async () => {
+  for (const [action, source, expected] of [
+    ['inlineCode', '这是代码内容\n', /这是`代码`内容/],
+    ['inlineMath', '这是x+1内容\n', /这是\$x\+1\$内容/]
+  ]) {
+    const page = await browser.newPage();
+    await page.goto(base + '/?mode=visual');
+    await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+    await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+    await page.locator('#documentBody p').evaluate((node, action) => {
+      const text = node.firstChild;
+      const range = document.createRange();
+      const start = action === 'inlineCode' ? 2 : 2;
+      const end = action === 'inlineCode' ? 4 : 5;
+      range.setStart(text, start); range.setEnd(text, end);
+      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    }, action);
+    await page.locator(`button[data-action=${action}]`).click();
+    await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
+    const edit = await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'edit'));
+    assert.match(edit.replacement, expected);
+    await page.close();
+  }
+});
+
+test('an existing inline formula edits in place without losing its Markdown source', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '公式 $x+1$ 在正文中。\n', version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.locator('#documentBody .math-inline').dblclick();
+  await page.locator('.direct-inline-math').fill('y+2');
+  await page.locator('button[data-action=settings]').click();
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
+  const edit = await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'edit'));
+  assert.match(edit.replacement, /公式 \$y\+2\$ 在正文中/);
   await page.close();
 });
