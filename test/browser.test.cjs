@@ -19,14 +19,12 @@ test.before(async () => {
         window.acquireVsCodeApi=()=>({postMessage:m=>window.__MDC_MESSAGES__.push(m),getState:()=>null,setState:()=>{}});
         window.__MDC_BOOT__={mode:new URLSearchParams(location.search).get('mode')||'visual',directory:location.origin,
           templateUrls:{simple:location.origin+'/assets/templates/simple.svg',academic:location.origin+'/assets/templates/academic.svg',
-            technical:location.origin+'/assets/templates/technical.svg',cover:location.origin+'/assets/templates/cover.svg',
-            'sjtu-red':location.origin+'/assets/templates/sjtu-red.svg', 'sjtu-blue':location.origin+'/assets/templates/sjtu-blue.svg',
-            'sjtu-red-cover':location.origin+'/assets/templates/sjtu-red-cover.svg',
-            'sjtu-blue-cover':location.origin+'/assets/templates/sjtu-blue-cover.svg',
-            'sjtu-red-outline':location.origin+'/assets/templates/sjtu-red-outline.svg',
-            'sjtu-blue-outline':location.origin+'/assets/templates/sjtu-blue-outline.svg',
-            'sjtu-wordmark':location.origin+'/assets/templates/sjtu-wordmark.png',
-            'sjtu-wordmark-blue':location.origin+'/assets/templates/sjtu-wordmark-blue.svg'}};
+            technical:location.origin+'/assets/templates/technical.svg',cover:location.origin+'/assets/templates/cover.svg'}};
+        for(const color of ['red','blue']) for(const paper of ['a4','a5','letter'])
+          for(const orientation of ['portrait','landscape']) for(const cover of [false,true]) {
+            const name='sjtu-'+color+'-'+paper+'-'+orientation+(cover?'-cover':'');
+            window.__MDC_BOOT__.templateUrls[name]=location.origin+'/assets/templates/'+name+'.png';
+          }
         </script><script src="/webview.js"></script></body></html>`);
       return;
     }
@@ -578,8 +576,8 @@ test('margin and draggable cover previews follow the selected template and lands
   await page.locator('button[data-action=settings]').click();
   assert.equal(await page.locator('input[name=template]').count(), 5);
   await page.locator('input[name=template][value=sjtu-red]').check();
-  assert.match(await page.locator('#marginSheet').evaluate(el => el.style.backgroundImage), /sjtu-red\.svg/);
-  assert.match(await page.locator('#coverSheet').evaluate(el => el.style.backgroundImage), /sjtu-red-cover\.svg/);
+  assert.match(await page.locator('#marginSheet').evaluate(el => el.style.backgroundImage), /sjtu-red-a4-portrait\.png/);
+  assert.match(await page.locator('#coverSheet').evaluate(el => el.style.backgroundImage), /sjtu-red-a4-portrait-cover\.png/);
   await page.locator('input[name=template][value=sjtu-blue]').check();
   await page.locator('#set-orientation').selectOption('landscape');
   const sheets = await page.evaluate(() => {
@@ -591,12 +589,10 @@ test('margin and draggable cover previews follow the selected template and lands
       numberRight: parseFloat(number.style.right), numberBottom: parseFloat(number.style.bottom) };
   });
   assert.ok(sheets.margin > 230 && sheets.cover > 330);
-  assert.match(sheets.marginBackground, /sjtu-blue\.svg/);
-  assert.match(sheets.coverBackground, /sjtu-blue-cover\.svg/);
-  assert.match(await page.locator('#marginSheet .template-outline').getAttribute('src'), /sjtu-blue-outline\.svg/);
-  assert.match(await page.locator('#coverSheet .template-outline').getAttribute('src'), /sjtu-blue-outline\.svg/);
-  assert.match(await page.locator('#marginSheet .template-wordmark').getAttribute('src'), /sjtu-wordmark-blue\.svg/);
-  assert.match(await page.locator('#coverSheet .template-wordmark').getAttribute('src'), /sjtu-wordmark-blue\.svg/);
+  assert.match(sheets.marginBackground, /sjtu-blue-a4-landscape\.png/);
+  assert.match(sheets.coverBackground, /sjtu-blue-a4-landscape-cover\.png/);
+  assert.equal(await page.locator('#marginSheet .template-outline, #marginSheet .template-wordmark, #marginSheet .template-footer-line').count(), 0);
+  assert.equal(await page.locator('#coverSheet .template-outline, #coverSheet .template-wordmark, #coverSheet .template-footer-line').count(), 0);
   assert.ok(Math.abs(sheets.numberRight - 10 / 297 * 100) < .1);
   assert.ok(Math.abs(sheets.numberBottom - 7 / 210 * 100) < .1);
   const title = page.locator('[data-cover-field=title]');
@@ -625,33 +621,32 @@ test('landscape Shanghai Jiao Tong pages keep the page number below the template
     const pages = [...document.querySelectorAll('#printHost .print-page')];
     const body = pages[1], number = body.querySelector('.print-page-number');
     const coverRect = pages[0].getBoundingClientRect(), dateRect = pages[0].querySelector('.cover-date').getBoundingClientRect();
-    const coverOutline = pages[0].querySelector('.template-outline').getBoundingClientRect();
     const bodyRect = body.getBoundingClientRect(), numberRect = number.getBoundingClientRect();
-    const bodyOutline = body.querySelector('.template-outline').getBoundingClientRect();
     return { count: pages.length, coverBackground: pages[0].style.backgroundImage, bodyBackground: body.style.backgroundImage,
       width: bodyRect.width, height: bodyRect.height,
       right: bodyRect.right - numberRect.right, bottom: bodyRect.bottom - numberRect.bottom,
-      dateBottom: dateRect.bottom, coverOutlineTop: coverOutline.top,
-      coverOutlineRatio: coverOutline.width / coverOutline.height,
-      outlineRight: bodyRect.right - bodyOutline.right,
-      outlineBaseline: (bodyOutline.top + bodyOutline.height * 67 / 68 - bodyRect.top) / bodyRect.height,
-      logoSource: body.querySelector('.template-wordmark').getAttribute('src'),
-      footerLine: body.querySelector('.template-footer-line').getBoundingClientRect().right,
-      outlineLineStart: bodyOutline.left + bodyOutline.width / 488 };
+      dateBottom: dateRect.bottom, coverMotifTop: coverRect.top + coverRect.height * .83,
+      artworkElements: pages.reduce((total, page) => total + page.querySelectorAll('.template-outline, .template-wordmark, .template-footer-line').length, 0) };
   });
   assert.ok(layout.count >= 2);
-  assert.match(layout.coverBackground, /sjtu-red-cover\.svg/);
-  assert.match(layout.bodyBackground, /sjtu-red\.svg/);
+  assert.match(layout.coverBackground, /sjtu-red-a4-landscape-cover\.png/);
+  assert.match(layout.bodyBackground, /sjtu-red-a4-landscape\.png/);
   assert.ok(layout.width > layout.height);
   assert.ok(Math.abs(layout.right - 10 * 96 / 25.4) < 2);
   assert.ok(Math.abs(layout.bottom - 7 * 96 / 25.4) < 2);
-  assert.ok(layout.dateBottom < layout.coverOutlineTop, 'cover date should stay above the complete outline');
-  assert.ok(Math.abs(layout.coverOutlineRatio - 488 / 68) < .05, 'the outline should keep its aspect ratio');
-  assert.ok(Math.abs(layout.outlineRight / layout.width - .075) < .01);
-  assert.ok(Math.abs(layout.outlineBaseline - 1290 / 1400) < .005);
-  assert.ok(Math.abs(layout.footerLine - layout.outlineLineStart) < 3, 'the extended line should meet the original left end');
-  assert.match(layout.logoSource, /sjtu-wordmark\.png/);
+  assert.ok(layout.dateBottom < layout.coverMotifTop, 'cover date should stay above the complete outline');
+  assert.equal(layout.artworkElements, 0, 'the artwork should be baked into the background PNG');
   assert.equal(await page.locator('#printHost .print-content h1').first().evaluate(el => getComputedStyle(el).fontWeight), '700');
+  const motifInk = await page.locator('#pdfPages canvas').nth(1).evaluate(canvas => {
+    const context = canvas.getContext('2d');
+    const x0 = Math.floor(canvas.width * .45), x1 = Math.floor(canvas.width * .9);
+    const y0 = Math.floor(canvas.height * .82), y1 = Math.floor(canvas.height * .93);
+    const pixels = context.getImageData(x0, y0, x1 - x0, y1 - y0).data;
+    let count = 0;
+    for (let i = 0; i < pixels.length; i += 4) if (pixels[i] > 130 && pixels[i] > pixels[i + 1] * 1.5 && pixels[i] > pixels[i + 2] * 1.4) count++;
+    return count;
+  });
+  assert.ok(motifInk > 150, `red motif missing from PDF preview: ${motifInk} pixels`);
   if (process.env.MDC_SCREENSHOT) {
     await page.locator('#pdfPages canvas').first().screenshot({ path: process.env.MDC_SCREENSHOT + '-cover.png' });
     await page.locator('#pdfPages canvas').nth(1).screenshot({ path: process.env.MDC_SCREENSHOT + '-body.png' });
@@ -659,26 +654,30 @@ test('landscape Shanghai Jiao Tong pages keep the page number below the template
   await page.close();
 });
 
-test('blue Shanghai Jiao Tong seal is blue in the generated PDF preview', async () => {
+test('blue Shanghai Jiao Tong seal and motif are blue in the generated PDF preview', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   await deliver(page, { type: 'document', source: '# 交大报告\n\n正文\n', version: 1, settings: {}, templates: [],
     exportSettings: { orientation: 'landscape', template: 'sjtu-blue', cover: true } });
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
-  const color = await page.locator('#printHost .template-wordmark').first().evaluate(img => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 428; canvas.height = 141;
+  const ink = await page.locator('#pdfPages canvas').first().evaluate(canvas => {
     const context = canvas.getContext('2d');
-    context.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    for (let i = 0; i < pixels.length; i += 4) {
-      if (pixels[i + 3] > 180) return [...pixels.slice(i, i + 4)];
-    }
-    return null;
+    const countBlue = (x0, y0, x1, y1) => {
+      const pixels = context.getImageData(Math.floor(x0 * canvas.width), Math.floor(y0 * canvas.height),
+        Math.floor((x1 - x0) * canvas.width), Math.floor((y1 - y0) * canvas.height)).data;
+      let blue = 0, red = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i + 2] > pixels[i] * 1.45 && pixels[i + 1] > pixels[i] * 1.25) blue++;
+        if (pixels[i] > pixels[i + 2] * 1.45 && pixels[i] > pixels[i + 1] * 1.3) red++;
+      }
+      return { blue, red };
+    };
+    return { seal: countBlue(.04, .03, .3, .115), motif: countBlue(.45, .82, .9, .93) };
   });
-  assert.ok(color && color[2] > color[0] && color[1] > color[0], `expected blue seal, got ${color}`);
-  assert.match(await page.locator('#printHost .template-wordmark').first().getAttribute('src'), /sjtu-wordmark-blue\.svg/);
+  assert.ok(ink.seal.blue > 50 && ink.seal.red === 0, `expected blue seal in PDF preview, got ${JSON.stringify(ink.seal)}`);
+  assert.ok(ink.motif.blue > 150 && ink.motif.red === 0, `expected blue motif in PDF preview, got ${JSON.stringify(ink.motif)}`);
+  assert.match(await page.locator('#printHost .print-page').first().evaluate(el => el.style.backgroundImage), /sjtu-blue-a4-landscape-cover\.png/);
   if (process.env.MDC_SCREENSHOT) await page.locator('#pdfPages canvas').first().screenshot({ path: process.env.MDC_SCREENSHOT + '-blue.png' });
   await page.close();
 });

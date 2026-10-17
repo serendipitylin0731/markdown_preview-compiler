@@ -90,9 +90,6 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .margin-sheet { position: relative; height: 230px; background: white; border: 1px solid #9caab8; box-shadow: 0 2px 8px #0004; cursor: crosshair; touch-action: none; }
 .margin-selection { position: absolute; border: 2px solid #2376bb; background: #2376bb2b; pointer-events: none; }
 .margin-page-number { position: absolute; color: #596475; font: 10px system-ui, sans-serif; pointer-events: none; white-space: nowrap; }
-.template-wordmark { position: absolute; left: 5%; width: auto; max-width: 85%; object-fit: contain; pointer-events: none; user-select: none; }
-.template-footer-line { position: absolute; height: max(1px, 0.14%); transform: translateY(50%); pointer-events: none; }
-.template-outline { position: absolute; right: 7.5%; height: auto; max-width: none; pointer-events: none; user-select: none; }
 .margin-inputs { display: grid; grid-template-columns: repeat(4, minmax(60px, 1fr)); gap: 8px; width: min(430px, 100%); }
 .margin-inputs label { margin: 0; font-size: 12px; }
 .font-setting { grid-column: 1 / -1; }
@@ -116,11 +113,6 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .template-option { border: 1px solid var(--vscode-panel-border, #888); padding: 8px; border-radius: 5px; align-items: center; }
 .template-thumb { display: block; width: 80px; height: 110px; background: white; box-shadow: 0 1px 5px #0004; background-size: 100% 100%; background-position: center; }
 .template-thumb { position: relative; }
-.template-thumb-wordmark { position: absolute; left: 5%; top: 2.5%; height: 5%; width: auto; }
-.template-thumb-footer-line { position: absolute; left: 4.8%; right: 75.36%; bottom: 7.86%; height: 1px; background: currentColor; }
-.template-thumb.sjtu-red { color: #c8161e; }
-.template-thumb.sjtu-blue { color: #17618d; }
-.template-thumb-outline { position: absolute; right: 7.5%; bottom: 7.67%; width: 68%; height: auto; pointer-events: none; }
 .template-thumb.academic { border-top: 3px solid #9b7c62; border-bottom: 3px solid #9b7c62; }
 .template-thumb.technical { border-top: 6px solid #245482; border-bottom: 2px solid #245482; }
 #printHost { position: absolute; left: -100000px; top: 0; width: max-content; pointer-events: none; color-scheme: light; color: #20242a; background: white;

@@ -675,54 +675,14 @@ function selectedTemplate() {
   return (document.querySelector('input[name=template]:checked') as HTMLInputElement | null)?.value || exportSettings.template;
 }
 function setTemplateArtwork(element: HTMLElement, templateId: string, cover = false) {
-  const background = cover ? coverBackground(templateId) : templateBackground(templateId);
-  const sjtu = templateId === 'sjtu-red' || templateId === 'sjtu-blue';
+  const draft = element.id === 'marginSheet' || element.id === 'coverSheet';
+  const paper = draft ? (document.getElementById('set-paper') as HTMLSelectElement | null)?.value || exportSettings.paper : exportSettings.paper;
+  const orientation = draft ? (document.getElementById('set-orientation') as HTMLSelectElement | null)?.value || exportSettings.orientation : exportSettings.orientation;
+  const background = cover ? coverBackground(templateId, paper, orientation) : templateBackground(templateId, paper, orientation);
   element.style.backgroundImage = `url("${background}")`;
   element.style.backgroundSize = '100% 100%';
   element.style.backgroundPosition = 'center';
   element.style.backgroundRepeat = 'no-repeat';
-  const logoUrl = sjtu ? boot.templateUrls?.[templateId === 'sjtu-blue' ? 'sjtu-wordmark-blue' : 'sjtu-wordmark'] : undefined;
-  let logo = element.querySelector<HTMLImageElement>(':scope > .template-wordmark');
-  if (logoUrl) {
-    if (!logo) {
-      logo = document.createElement('img');
-      logo.className = 'template-wordmark';
-      logo.alt = '';
-      element.prepend(logo);
-    }
-    logo.src = logoUrl;
-    logo.style.height = cover ? '7%' : '5%';
-    logo.style.top = cover ? '5%' : '2.5%';
-  } else logo?.remove();
-  const outlineUrl = sjtu ? boot.templateUrls?.[`${templateId}-outline`] : undefined;
-  let outline = element.querySelector<HTMLImageElement>(':scope > .template-outline');
-  let line = element.querySelector<HTMLElement>(':scope > .template-footer-line');
-  if (outlineUrl) {
-    const orientation = (document.getElementById('set-orientation') as HTMLSelectElement | null)?.value || exportSettings.orientation;
-    const outlineWidth = orientation === 'landscape' ? 50 : 68;
-    const lineBottom = cover ? 100 / 14 : 110 / 14;
-    if (!line) {
-      line = document.createElement('div');
-      line.className = 'template-footer-line';
-      element.prepend(line);
-    }
-    line.style.left = cover ? '7.5%' : '4.8%';
-    line.style.right = `${7.5 + outlineWidth * 487 / 488}%`;
-    line.style.bottom = `${lineBottom}%`;
-    line.style.backgroundColor = templateId === 'sjtu-blue' ? '#17618d' : '#c8161e';
-    if (!outline) {
-      outline = document.createElement('img');
-      outline.className = 'template-outline';
-      outline.alt = '';
-      element.prepend(outline);
-    }
-    outline.src = outlineUrl;
-    outline.style.width = `${outlineWidth}%`;
-    const [paperWidth, paperHeight] = paperSizeFor(
-      (document.getElementById('set-paper') as HTMLSelectElement | null)?.value || exportSettings.paper,
-      orientation);
-    outline.style.bottom = `${lineBottom - outlineWidth * paperWidth / paperHeight / 488}%`;
-  } else { outline?.remove(); line?.remove(); }
 }
 function updateMarginSheet() {
   const sheet = document.getElementById('marginSheet') as HTMLElement | null;
@@ -861,19 +821,19 @@ function settingsDialog() {
   for (const key of ['paper','orientation','align','pageNumberFormat']) (document.getElementById('set-' + key) as HTMLSelectElement).value = exportSettings[key];
   updateMarginSheet(); bindMarginSheet(); updateCoverSheet(); bindCoverSheet();
 }
-function templateOptions() {
+function templateOptions(paper = exportSettings.paper, orientation = exportSettings.orientation, selected = exportSettings.template) {
   const all = [
     { id: 'simple', name: '简洁文档' }, { id: 'academic', name: '学术报告' }, { id: 'technical', name: '技术文档' },
     { id: 'sjtu-red', name: '上海交大 · 红' }, { id: 'sjtu-blue', name: '上海交大 · 蓝' }, ...templates
   ];
   return all.map(t => {
-    const background = t.url || templateBackground(t.id);
-    const branded = t.id === 'sjtu-red' || t.id === 'sjtu-blue';
-    const logo = branded ? boot.templateUrls?.[t.id === 'sjtu-blue' ? 'sjtu-wordmark-blue' : 'sjtu-wordmark'] : undefined;
-    const style = `background-image:url(${JSON.stringify(background)})`;
+    const background = t.url || templateBackground(t.id, paper, orientation);
+    const [paperWidth, paperHeight] = paperSizeFor(paper, orientation);
+    const thumbHeight = orientation === 'landscape' ? 80 : 110;
+    const style = `background-image:url(${JSON.stringify(background)});width:${thumbHeight * paperWidth / paperHeight}px;height:${thumbHeight}px`;
     return `<label class="template-option">
-    <input type="radio" name="template" value="${esc(t.id)}" ${exportSettings.template === t.id ? 'checked' : ''}>
-    <span class="template-thumb ${esc(t.id)}" style="${esc(style)}">${logo ? `<img class="template-thumb-wordmark" src="${esc(logo)}" alt="">` : ''}${branded && boot.templateUrls?.[`${t.id}-outline`] ? `<span class="template-thumb-footer-line"></span><img class="template-thumb-outline" src="${esc(boot.templateUrls[`${t.id}-outline`])}" alt="">` : ''}</span>
+    <input type="radio" name="template" value="${esc(t.id)}" ${selected === t.id ? 'checked' : ''}>
+    <span class="template-thumb ${esc(t.id)}" style="${esc(style)}"></span>
     <span>${esc(t.name)}</span>${t.url ? `<button data-action="exportTemplate" data-id="${esc(t.id)}">导出正文</button>` : ''}
   </label>`;
   }).join('');
@@ -881,6 +841,13 @@ function templateOptions() {
 function onChange(event: Event) {
   const target = event.target as HTMLInputElement;
   if (target.id === 'set-paper' || target.id === 'set-orientation' || target.name === 'template' || target.id === 'set-pageNumbers') {
+    if (target.id === 'set-paper' || target.id === 'set-orientation') {
+      const selected = selectedTemplate();
+      const paper = (document.getElementById('set-paper') as HTMLSelectElement).value;
+      const orientation = (document.getElementById('set-orientation') as HTMLSelectElement).value;
+      const list = document.querySelector<HTMLElement>('.template-list');
+      if (list) list.innerHTML = templateOptions(paper, orientation, selected);
+    }
     updateMarginSheet(); updateCoverSheet();
   }
   if (['set-coverDate', 'set-coverSubtitle', 'set-coverAuthor'].includes(target.id)) updateCoverSheet();
@@ -1120,9 +1087,10 @@ const mmToPx = (mm: number) => mm * 96 / 25.4;
 function paperSize() {
   return paperSizeFor(exportSettings.paper, exportSettings.orientation);
 }
-function templateBackground(templateId = exportSettings.template) {
+function templateBackground(templateId = exportSettings.template, paper = exportSettings.paper, orientation = exportSettings.orientation) {
   const custom = templates.find(t => t.id === templateId);
   if (custom?.url) return custom.url;
+  if (templateId === 'sjtu-red' || templateId === 'sjtu-blue') return boot.templateUrls?.[`${templateId}-${paper}-${orientation}`];
   if (boot.templateUrls?.[templateId]) return boot.templateUrls[templateId];
   const variants: any = {
     simple: '<rect x="0" y="0" width="100%" height="100%" fill="white"/>',
@@ -1132,9 +1100,10 @@ function templateBackground(templateId = exportSettings.template) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">${variants[templateId] || variants.simple}</svg>`;
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
-function coverBackground(templateId = exportSettings.template) {
+function coverBackground(templateId = exportSettings.template, paper = exportSettings.paper, orientation = exportSettings.orientation) {
   const custom = templates.find(t => t.id === templateId);
   if (custom?.coverUrl || custom?.url) return custom.coverUrl || custom.url;
+  if (templateId === 'sjtu-red' || templateId === 'sjtu-blue') return boot.templateUrls?.[`${templateId}-${paper}-${orientation}-cover`];
   if (boot.templateUrls?.[`${templateId}-cover`]) return boot.templateUrls[`${templateId}-cover`];
   if (boot.templateUrls?.cover) return boot.templateUrls.cover;
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400"><rect width="100%" height="100%" fill="#fdfbf7"/><path d="M90 260H910M90 1100H910" stroke="#315577" stroke-width="5"/><rect x="90" y="270" width="72" height="8" fill="#315577"/></svg>';

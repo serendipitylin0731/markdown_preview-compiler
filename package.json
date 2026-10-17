@@ -2,7 +2,7 @@
   "name": "markdown-preview-compiler",
   "displayName": "Markdown Preview & Compiler",
   "description": "Markdown source, visual editing, live PDF preview and export.",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "publisher": "serendpity-lin",
   "repository": {
     "type": "git",
@@ -111,6 +111,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "render:sjtu": "node scripts/render-sjtu-templates.mjs",
     "watch": "node scripts/build.mjs --watch",
     "check": "tsc --noEmit",
     "test": "npm run build && node --test test/*.test.cjs",
