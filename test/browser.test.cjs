@@ -17,7 +17,7 @@ test.before(async () => {
         <div id="app"></div><script nonce="mdctest">
         window.__MDC_MESSAGES__=[];
         window.acquireVsCodeApi=()=>({postMessage:m=>window.__MDC_MESSAGES__.push(m),getState:()=>null,setState:()=>{}});
-        window.__MDC_BOOT__={mode:new URLSearchParams(location.search).get('mode')||'visual',worker:location.origin+'/pdf.worker.min.mjs',directory:location.origin,
+        window.__MDC_BOOT__={mode:new URLSearchParams(location.search).get('mode')||'visual',directory:location.origin,
           templateUrls:{simple:location.origin+'/assets/templates/simple.svg',academic:location.origin+'/assets/templates/academic.svg',
             technical:location.origin+'/assets/templates/technical.svg',cover:location.origin+'/assets/templates/cover.svg'}};
         </script><script src="/webview.js"></script></body></html>`);
@@ -145,6 +145,80 @@ test('PDF uses the editor font and a readable light print palette in a dark them
   });
   assert.ok(ink.background.every(value => value > 220), `code background is too dark: ${ink.background}`);
   assert.ok(ink.darkPixels > 15, 'the exported heading should have dark ink');
+  await page.close();
+});
+
+test('README PDF preview and export keep print colors, margins, and footer without linked CSS', async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 1250 } });
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await page.addStyleTag({ content: ':root { --vscode-foreground:#d4d4d4; --vscode-editor-foreground:#d4d4d4; --vscode-textCodeBlock-background:#3c3c3c; }' });
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8');
+  await deliver(page, { type: 'document', source, version: 1, settings: { editorFontFamily: 'monospace' },
+    exportSettings: { marginTop: 30, marginRight: 28, marginBottom: 30, marginLeft: 28 }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  if (process.env.MDC_SCREENSHOT) await page.locator('#pdfPages canvas').first().screenshot({ path: process.env.MDC_SCREENSHOT });
+  const layout = await page.evaluate(() => {
+    const paper = document.querySelector('#printHost .print-page');
+    const body = paper.querySelector('.print-content');
+    const title = body.querySelector('h1');
+    const footer = paper.querySelector('.print-page-number');
+    const pageRect = paper.getBoundingClientRect(), contentRect = body.getBoundingClientRect();
+    const titleRect = title.getBoundingClientRect(), footerRect = footer.getBoundingClientRect();
+    const canvas = document.querySelector('#pdfPages canvas');
+    const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    const rectInk = (rect, threshold) => {
+      let count = 0;
+      for (let y = Math.floor((rect.top - pageRect.top) * canvas.height / pageRect.height); y < Math.ceil((rect.bottom - pageRect.top) * canvas.height / pageRect.height); y += 2)
+        for (let x = Math.floor((rect.left - pageRect.left) * canvas.width / pageRect.width); x < Math.ceil((rect.right - pageRect.left) * canvas.width / pageRect.width); x += 2) {
+          const i = (y * canvas.width + x) * 4;
+          if (pixels[i] < threshold && pixels[i + 1] < threshold && pixels[i + 2] < threshold) count++;
+        }
+      return count;
+    };
+    return { marginLeft: contentRect.left - pageRect.left, marginTop: contentRect.top - pageRect.top,
+      contentRight: pageRect.right - contentRect.right, contentBottom: pageRect.bottom - contentRect.bottom,
+      used: (body.lastElementChild.getBoundingClientRect().bottom - contentRect.top) / contentRect.height,
+      titleInk: rectInk(titleRect, 110), footerInk: rectInk(footerRect, 160),
+      footerRight: pageRect.right - footerRect.right, footerBottom: pageRect.bottom - footerRect.bottom,
+      footerGap: footerRect.top - contentRect.bottom };
+  });
+  assert.ok(Math.abs(layout.marginLeft - 28 * 96 / 25.4) < 2);
+  assert.ok(Math.abs(layout.marginTop - 30 * 96 / 25.4) < 2);
+  assert.ok(Math.abs(layout.contentRight - 28 * 96 / 25.4) < 2);
+  assert.ok(Math.abs(layout.contentBottom - 30 * 96 / 25.4) < 2);
+  assert.ok(layout.used > .9, `first page only ${Math.round(layout.used * 100)}% full`);
+  assert.ok(layout.titleInk > 30, `title ink: ${layout.titleInk}`);
+  assert.ok(layout.footerInk > 1, `footer ink: ${layout.footerInk}`);
+  assert.ok(layout.footerRight < 50 && layout.footerBottom < 40 && layout.footerGap > 20);
+  const isolated = await page.evaluate(() => {
+    document.querySelector('link[href$="webview.css"]').disabled = true;
+    const paper = document.querySelector('#printHost .print-page');
+    const content = paper.querySelector('.print-content');
+    const number = paper.querySelector('.print-page-number');
+    const paperRect = paper.getBoundingClientRect(), contentRect = content.getBoundingClientRect(), numberRect = number.getBoundingClientRect();
+    return { left: contentRect.left - paperRect.left, top: contentRect.top - paperRect.top,
+      color: getComputedStyle(content.querySelector('h1')).color,
+      numberRight: paperRect.right - numberRect.right };
+  });
+  assert.ok(Math.abs(isolated.left - layout.marginLeft) < 2);
+  assert.ok(Math.abs(isolated.top - layout.marginTop) < 2);
+  assert.equal(isolated.color, 'rgb(32, 36, 42)');
+  assert.ok(isolated.numberRight < 50);
+  await page.evaluate(() => document.querySelector('link[href$="webview.css"]').disabled = false);
+  await page.locator('button[data-action=settings]').click();
+  await page.locator('#set-marginLeft').fill('35');
+  await page.locator('#set-marginLeft').dispatchEvent('change');
+  await page.locator('button[data-action=saveSettings]').click();
+  await page.waitForFunction(() => {
+    const paper = document.querySelector('#printHost .print-page');
+    const content = paper?.querySelector('.print-content');
+    return content && Math.abs(content.getBoundingClientRect().left - paper.getBoundingClientRect().left - 35 * 96 / 25.4) < 2 &&
+      document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新');
+  }, null, { timeout: 30000 });
+  await page.locator('button[data-action=export]').click();
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'savePdf'));
+  assert.equal(Buffer.from(await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'savePdf').data), 'base64').subarray(0, 5).toString(), '%PDF-');
   await page.close();
 });
 
@@ -304,10 +378,16 @@ test('PDF layout uses a dragged content rectangle and imported font', async () =
   await deliver(page, { type: 'document', source: '# 内容\n\n`small`\n\n```txt\nblock\n```\n', version: 1,
     settings: {}, exportSettings: {}, templates: [], fonts: [font] });
   await page.locator('button[data-action=settings]').click();
-  assert.equal(await page.locator('#set-marginTop').count(), 0);
+  assert.equal(await page.locator('#set-marginTop').inputValue(), '24');
   assert.match(await page.locator('#marginText').textContent(), /上 24、右 22、下 24、左 22/);
   assert.equal(await page.locator('#set-fontFamily option').count(), 2);
   const sheet = await page.locator('#marginSheet').boundingBox();
+  await page.mouse.click(sheet.x + 18, sheet.y + 26);
+  assert.equal(await page.locator('#set-marginLeft').inputValue(), await page.locator('#set-marginRight').inputValue());
+  assert.equal(await page.locator('#set-marginTop').inputValue(), await page.locator('#set-marginBottom').inputValue());
+  await page.locator('#set-marginRight').fill('36');
+  await page.locator('#set-marginRight').dispatchEvent('change');
+  assert.equal(await page.locator('#set-marginRight').inputValue(), '36');
   await page.mouse.move(sheet.x + 18, sheet.y + 26);
   await page.mouse.down();
   await page.mouse.move(sheet.x + sheet.width - 25, sheet.y + sheet.height - 36, { steps: 5 });

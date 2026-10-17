@@ -11,13 +11,11 @@ import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
-import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import './style.css';
 
 declare const acquireVsCodeApi: () => { postMessage(value: unknown): void; getState(): any; setState(value: any): void };
 const vscode = acquireVsCodeApi();
 const boot = (window as any).__MDC_BOOT__;
-pdfjs.GlobalWorkerOptions.workerSrc = boot.worker;
 mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'default' });
 
 const md = new MarkdownIt({
@@ -97,12 +95,12 @@ let exportSettings: any = {
   fontSize: 11, lineHeight: 1.5, paragraphGap: 8, template: 'simple', cover: false, toc: false,
   header: '', footer: '', pageNumbers: true, firstLineIndent: 0, align: 'left',
   fontFamily: '', titleFontFamily: '', headingScale: 1,
-  headingGap: 1, pageNumberPosition: 'right', pageNumberFormat: 'fraction',
+  headingGap: 1, pageNumberFormat: 'fraction',
   codeBackground: '#f4f6f8', tableHeaderBackground: '#eef2f6', tableBorderColor: '#aab4bf'
 };
 function normalizeExportSettings() {
   const ranges: any = {
-    marginTop: [0, 60], marginRight: [0, 60], marginBottom: [0, 60], marginLeft: [0, 60],
+    marginTop: [0, 60], marginRight: [0, 60], marginBottom: [18, 60], marginLeft: [0, 60],
     fontSize: [6, 36], lineHeight: [1, 3], paragraphGap: [0, 50],
     firstLineIndent: [0, 10], headingScale: [0.5, 3], headingGap: [0.2, 3]
   };
@@ -117,7 +115,8 @@ let pendingEdit: any = null;
 let editTimer: number | undefined;
 let pdfTimer: number | undefined;
 let pdfBytes: Uint8Array | null = null;
-let pdfDoc: any = null;
+let pdfPreviewImages: string[] = [];
+let pdfPreviewSize: [number, number] = [210, 297];
 let pdfObserver: IntersectionObserver | null = null;
 let pdfRenderToken = 0;
 let pdfPage = 1;
@@ -446,6 +445,10 @@ function updateMarginSheet() {
   selection.style.top = `${marginDraft.marginTop / height * 100}%`;
   selection.style.bottom = `${marginDraft.marginBottom / height * 100}%`;
   document.getElementById('marginText')!.textContent = `正文区域：上 ${Math.round(marginDraft.marginTop)}、右 ${Math.round(marginDraft.marginRight)}、下 ${Math.round(marginDraft.marginBottom)}、左 ${Math.round(marginDraft.marginLeft)} mm`;
+  for (const key of ['marginTop', 'marginRight', 'marginBottom', 'marginLeft']) {
+    const field = document.getElementById('set-' + key) as HTMLInputElement | null;
+    if (field) field.value = String(marginDraft[key]);
+  }
 }
 function bindMarginSheet() {
   const sheet = document.getElementById('marginSheet') as HTMLElement;
@@ -455,17 +458,26 @@ function bindMarginSheet() {
     return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
       y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) };
   };
-  sheet.addEventListener('pointerdown', event => { start = coords(event); sheet.setPointerCapture(event.pointerId); });
+  sheet.addEventListener('pointerdown', event => {
+    start = coords(event);
+    const [width, height] = paperSizeFor((document.getElementById('set-paper') as HTMLSelectElement).value,
+      (document.getElementById('set-orientation') as HTMLSelectElement).value);
+    const side = Math.min(60, Math.round(start.x * width));
+    const vertical = Math.max(18, Math.min(60, Math.round(start.y * height)));
+    marginDraft = { marginLeft: side, marginRight: side, marginTop: vertical, marginBottom: vertical };
+    updateMarginSheet();
+    sheet.setPointerCapture(event.pointerId);
+  });
   sheet.addEventListener('pointermove', event => {
     if (!start) return;
     const end = coords(event);
     const [width, height] = paperSizeFor((document.getElementById('set-paper') as HTMLSelectElement).value,
       (document.getElementById('set-orientation') as HTMLSelectElement).value);
-    if (Math.abs(end.x - start.x) * width < 30 || Math.abs(end.y - start.y) * height < 30) return;
-    marginDraft = { marginLeft: Math.min(60, Math.round(Math.min(start.x, end.x) * width)),
-      marginRight: Math.min(60, Math.round((1 - Math.max(start.x, end.x)) * width)),
-      marginTop: Math.min(60, Math.round(Math.min(start.y, end.y) * height)),
-      marginBottom: Math.min(60, Math.round((1 - Math.max(start.y, end.y)) * height)) };
+    if (Math.abs(end.x - start.x) * width < 6 && Math.abs(end.y - start.y) * height < 6) return;
+    const right = Math.max(0, Math.min(60, Math.round((1 - end.x) * width)));
+    const bottom = Math.max(18, Math.min(60, Math.round((1 - end.y) * height)));
+    marginDraft.marginRight = Math.abs(right - marginDraft.marginLeft) <= 3 ? marginDraft.marginLeft : right;
+    marginDraft.marginBottom = Math.abs(bottom - marginDraft.marginTop) <= 3 ? marginDraft.marginTop : bottom;
     updateMarginSheet();
   });
   sheet.addEventListener('pointerup', () => { start = null; });
@@ -476,7 +488,8 @@ function settingsDialog() {
   showDialog('PDF 排版设置', `<div class="setting-grid">
     <label>纸张<select id="set-paper"><option value="a4">A4</option><option value="a5">A5</option><option value="letter">Letter</option></select></label>
     <label>方向<select id="set-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
-    <div class="margin-editor"><strong>页边距</strong><p>在白色页面上拖拽，框选正文区域</p><div id="marginSheet" class="margin-sheet" role="img" aria-label="拖拽框选 PDF 正文区域"><div id="marginSelection" class="margin-selection"></div></div><p id="marginText"></p></div>
+    <div class="margin-editor"><strong>页边距</strong><p>点击确定左上角，右下角自动对称；拖动可调整，靠近对称位置时自动吸附</p><div id="marginSheet" class="margin-sheet" role="img" aria-label="点击或拖动调整 PDF 正文区域"><div id="marginSelection" class="margin-selection"></div></div><p id="marginText"></p>
+      <div class="margin-inputs"><label>上 mm<input id="set-marginTop" type="number" min="0" max="60" step="1"></label><label>右 mm<input id="set-marginRight" type="number" min="0" max="60" step="1"></label><label>下 mm<input id="set-marginBottom" type="number" min="18" max="60" step="1"></label><label>左 mm<input id="set-marginLeft" type="number" min="0" max="60" step="1"></label></div><p>页码固定在右下角；底边距至少 18 mm，避免碰到正文。</p></div>
     ${settingField('fontSize','正文字号 pt','number','6')}${settingField('lineHeight','行距','number','1')}
     ${settingField('paragraphGap','段落间距 px','number','0')}${settingField('firstLineIndent','首行缩进 em','number','0')}
     <label>对齐<select id="set-align"><option value="left">左对齐</option><option value="justify">两端对齐</option><option value="center">居中</option></select></label>
@@ -486,13 +499,12 @@ function settingsDialog() {
     ${settingField('codeBackground','代码块背景','color')}${settingField('tableHeaderBackground','表头背景','color')}
     ${settingField('tableBorderColor','表格边框','color')}
     ${settingField('header','页眉')}${settingField('footer','页脚')}
-    <label>页码位置<select id="set-pageNumberPosition"><option value="left">左</option><option value="center">中</option><option value="right">右</option></select></label>
     <label>页码格式<select id="set-pageNumberFormat"><option value="fraction">当前页 / 总页数</option><option value="number">仅页码</option></select></label>
     <label><input id="set-pageNumbers" type="checkbox" ${exportSettings.pageNumbers ? 'checked' : ''}>显示页码</label>
     <label><input id="set-cover" type="checkbox" ${exportSettings.cover ? 'checked' : ''}>封面页</label>
     <label><input id="set-toc" type="checkbox" ${exportSettings.toc ? 'checked' : ''}>自动目录</label>
     </div><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="saveSettings" class="primary">应用</button></div>`);
-  for (const key of ['paper','orientation','align','pageNumberPosition','pageNumberFormat']) (document.getElementById('set-' + key) as HTMLSelectElement).value = exportSettings[key];
+  for (const key of ['paper','orientation','align','pageNumberFormat']) (document.getElementById('set-' + key) as HTMLSelectElement).value = exportSettings[key];
   updateMarginSheet(); bindMarginSheet();
 }
 function templateDialog() {
@@ -510,6 +522,13 @@ function templateDialog() {
 function onChange(event: Event) {
   const target = event.target as HTMLInputElement;
   if (target.id === 'set-paper' || target.id === 'set-orientation') updateMarginSheet();
+  const marginKey = target.id.replace(/^set-/, '');
+  if (marginDraft && ['marginTop','marginRight','marginBottom','marginLeft'].includes(marginKey)) {
+    const minimum = marginKey === 'marginBottom' ? 18 : 0;
+    const value = Number(target.value);
+    marginDraft[marginKey] = Number.isFinite(value) ? Math.max(minimum, Math.min(60, value)) : minimum;
+    target.value = String(marginDraft[marginKey]); updateMarginSheet();
+  }
   if (target.id === 'autoUpdate') {
     autoUpdate = target.checked; if (autoUpdate) schedulePdf();
   }
@@ -574,7 +593,7 @@ function onClick(event: MouseEvent) {
     pdfDirty = true; post('saveSettings', { value: exportSettings }); closeDialog(); schedulePdf(); return;
   }
   if (action === 'saveSettings') {
-    for (const key of ['paper','orientation','align','fontFamily','titleFontFamily','codeBackground','tableHeaderBackground','tableBorderColor','header','footer','pageNumberPosition','pageNumberFormat']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).value;
+    for (const key of ['paper','orientation','align','fontFamily','titleFontFamily','codeBackground','tableHeaderBackground','tableBorderColor','header','footer','pageNumberFormat']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).value;
     Object.assign(exportSettings, marginDraft);
     for (const key of ['fontSize','lineHeight','paragraphGap','firstLineIndent','headingScale','headingGap']) exportSettings[key] = Number((document.getElementById('set-' + key) as HTMLInputElement).value);
     for (const key of ['pageNumbers','cover','toc']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).checked;
@@ -848,10 +867,7 @@ async function paginate() {
     const pre = element.querySelector('pre');
     const lines = pre?.textContent?.includes('\n') ? pre.textContent.split('\n') : [];
     const canFlow = rows.length > 1 || lines.length > 1 || (!table && !pre && !!element.querySelector('p, blockquote, li'));
-    const last = content.lastElementChild as HTMLElement | null;
-    const occupied = last ? last.getBoundingClientRect().bottom - content.getBoundingClientRect().top : 0;
-    const minimumSpace = Math.max(30, parseFloat(getComputedStyle(content).fontSize) * Number(exportSettings.lineHeight || 1.5) * 2);
-    if (content.children.length && (!canFlow || contentHeight() - occupied < minimumSpace)) nextPage(block.line);
+    if (content.children.length && !canFlow) nextPage(block.line);
     content.append(element);
     if (content.scrollHeight <= contentHeight() + 2) continue;
     // Rows of an oversized table can continue on a later page with its header.
@@ -921,7 +937,8 @@ async function paginate() {
         const last = content.lastElementChild as HTMLElement | null;
         const occupied = last ? last.getBoundingClientRect().bottom - content.getBoundingClientRect().top : 0;
         const available = contentHeight() - occupied;
-        if (available < 30) { nextPage(block.line); continue; }
+        const nextLine = lineBottoms.find(bottom => bottom > offset + 1);
+        if (available < (nextLine ? nextLine - offset + 1 : 1)) { nextPage(block.line); continue; }
         let height = Math.min(available, fullHeight - offset);
         let nextOffset = offset + height;
         if (nextOffset < fullHeight - 1 && lineBottoms.length) {
@@ -948,7 +965,6 @@ async function paginate() {
     const number = item.querySelector('.print-page-number');
     if (number && exportSettings.pageNumbers) {
       number.textContent = exportSettings.pageNumberFormat === 'number' ? String(i + 1) : `${i + 1} / ${pages.length}`;
-      number.classList.add('position-' + (exportSettings.pageNumberPosition || 'right'));
     }
   });
   pageBoundaries = boundaries;
@@ -975,6 +991,32 @@ function schedulePdf(force = false) {
   window.clearTimeout(pdfTimer);
   pdfTimer = window.setTimeout(() => void generatePdf(), force ? 0 : 900);
 }
+// html2canvas clones the document into an iframe. In VS Code webviews, linked CSS can fail
+// to load there, so preserve the computed print layout on the captured nodes themselves.
+const printStyleProperties = [
+  'display','position','top','right','bottom','left','width','height','min-width','max-width','min-height','max-height',
+  'box-sizing','overflow','overflow-x','overflow-y','visibility','opacity','z-index','transform','transform-origin',
+  'margin-top','margin-right','margin-bottom','margin-left','padding-top','padding-right','padding-bottom','padding-left',
+  'border-top-width','border-right-width','border-bottom-width','border-left-width',
+  'border-top-style','border-right-style','border-bottom-style','border-left-style',
+  'border-top-color','border-right-color','border-bottom-color','border-left-color','border-radius',
+  'background-color','background-image','background-position','background-size','background-repeat','box-shadow',
+  'color','font-family','font-size','font-weight','font-style','font-variant','line-height','letter-spacing','word-spacing',
+  'text-align','text-decoration-line','text-decoration-color','text-decoration-style','text-transform','text-indent',
+  'text-shadow','white-space','overflow-wrap','word-break','vertical-align','object-fit',
+  'border-collapse','border-spacing','table-layout','list-style-type','direction'
+];
+function freezePrintStyles(page: HTMLElement) {
+  const elements = [page, ...page.querySelectorAll<HTMLElement>('*')];
+  const snapshots = elements.map(element => {
+    const computed = getComputedStyle(element);
+    return printStyleProperties.map(property => computed.getPropertyValue(property));
+  });
+  elements.forEach((element, index) => printStyleProperties.forEach((property, propertyIndex) => {
+    const value = snapshots[index][propertyIndex];
+    if (value) element.style.setProperty(property, value);
+  }));
+}
 async function generatePdf() {
   if (pdfBusy) { pdfQueued = true; return; }
   pdfBusy = true; pdfQueued = false;
@@ -984,16 +1026,21 @@ async function generatePdf() {
   toast('正在生成 PDF…');
   try {
     await fontsReady;
+    await document.fonts.ready;
     const pages = await paginate();
     const [width, height] = paperSize();
     const pdf = new jsPDF({ orientation: exportSettings.orientation, unit: 'mm', format: [width, height], compress: true });
+    const previewImages: string[] = [];
     for (let i = 0; i < pages.length; i++) {
       if (i) pdf.addPage([width, height], exportSettings.orientation);
       if (status) status.textContent = `正在生成 PDF：${i + 1} / ${pages.length}`;
       const page = pages[i];
+      freezePrintStyles(page);
       const canvas = await html2canvas(page, { scale: 1.5, useCORS: true, allowTaint: false, backgroundColor: '#fff', logging: false,
         width: page.offsetWidth, height: page.offsetHeight, windowWidth: page.offsetWidth, windowHeight: page.offsetHeight });
-      pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, width, height, undefined, 'FAST');
+      const image = canvas.toDataURL('image/jpeg', 0.92);
+      previewImages.push(image);
+      pdf.addImage(image, 'JPEG', 0, 0, width, height, undefined, 'FAST');
       // Keep links clickable even though the page artwork is rasterized.
       for (const link of page.querySelectorAll<HTMLAnchorElement>('a[href]')) {
         const href = link.getAttribute('href') || '';
@@ -1011,7 +1058,8 @@ async function generatePdf() {
     }
     pdfBytes = new Uint8Array(pdf.output('arraybuffer'));
     pdfDirty = false;
-    pdfDoc = await pdfjs.getDocument({ data: pdfBytes.slice() }).promise;
+    pdfPreviewImages = previewImages;
+    pdfPreviewSize = [width, height];
     await renderPdfPages();
     if (status) status.textContent = `PDF 已更新 · ${pages.length} 页`;
     toast(`PDF 已更新 · ${pages.length} 页`);
@@ -1027,55 +1075,53 @@ async function generatePdf() {
 }
 async function renderPdfPages() {
   const container = document.getElementById('pdfPages');
-  if (!container || !pdfDoc) return;
+  if (!container || !pdfPreviewImages.length) return;
   pdfObserver?.disconnect();
   const token = ++pdfRenderToken;
-  const currentDoc = pdfDoc;
   const previous = pdfPage;
   container.innerHTML = '';
   pdfObserver = new IntersectionObserver(entries => {
     for (const entry of entries) if (entry.isIntersecting)
-      void renderPdfSlot(entry.target as HTMLElement, token, currentDoc);
+      void renderPdfSlot(entry.target as HTMLElement, token);
   }, { root: container, rootMargin: '700px 0px' });
-  for (let i = 1; i <= currentDoc.numPages; i++) {
-    const page = await currentDoc.getPage(i);
-    if (token !== pdfRenderToken) return;
-    const viewport = page.getViewport({ scale: pdfScale });
+  for (let i = 1; i <= pdfPreviewImages.length; i++) {
     const slot = document.createElement('div');
     slot.className = 'pdf-page-slot'; slot.dataset.page = String(i);
-    slot.style.width = `${Math.ceil(viewport.width)}px`; slot.style.height = `${Math.ceil(viewport.height)}px`;
+    slot.style.width = `${Math.ceil(pdfPreviewSize[0] * 72 / 25.4 * pdfScale)}px`;
+    slot.style.height = `${Math.ceil(pdfPreviewSize[1] * 72 / 25.4 * pdfScale)}px`;
     container.append(slot); pdfObserver.observe(slot);
   }
-  jumpPage(Math.min(previous, currentDoc.numPages));
+  jumpPage(Math.min(previous, pdfPreviewImages.length));
   const first = container.querySelector<HTMLElement>('.pdf-page-slot');
-  if (first) await renderPdfSlot(first, token, currentDoc);
+  if (first) await renderPdfSlot(first, token);
   updatePageInfo();
 }
-async function renderPdfSlot(slot: HTMLElement, token: number, currentDoc: any) {
+async function renderPdfSlot(slot: HTMLElement, token: number) {
   if (slot.dataset.rendering || slot.querySelector('canvas') || token !== pdfRenderToken) return;
   slot.dataset.rendering = 'true';
   try {
-    const page = await currentDoc.getPage(Number(slot.dataset.page));
+    const image = new Image();
+    image.src = pdfPreviewImages[Number(slot.dataset.page) - 1];
+    await image.decode();
     if (token !== pdfRenderToken) return;
-    const viewport = page.getViewport({ scale: pdfScale });
     const canvas = document.createElement('canvas');
-    canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
-    const context = canvas.getContext('2d')!;
-    await page.render({ canvasContext: context, viewport }).promise;
-    if (token === pdfRenderToken) slot.append(canvas);
+    canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+    canvas.style.width = slot.style.width; canvas.style.height = slot.style.height;
+    canvas.getContext('2d')!.drawImage(image, 0, 0);
+    slot.append(canvas);
   } catch (error) {
     if (token === pdfRenderToken) slot.textContent = `页面渲染失败：${error instanceof Error ? error.message : error}`;
   } finally { delete slot.dataset.rendering; }
 }
 function updatePageInfo() {
   const info = document.getElementById('pageInfo');
-  if (info) info.textContent = `${pdfPage} / ${pdfDoc?.numPages || 0}`;
+  if (info) info.textContent = `${pdfPage} / ${pdfPreviewImages.length}`;
   const label = document.getElementById('zoomLabel');
   if (label) label.textContent = `${Math.round(pdfScale * 100)}%`;
 }
 function jumpPage(page: number) {
-  if (!pdfDoc) return;
-  pdfPage = Math.max(1, Math.min(pdfDoc.numPages, page));
+  if (!pdfPreviewImages.length) return;
+  pdfPage = Math.max(1, Math.min(pdfPreviewImages.length, page));
   document.querySelector(`#pdfPages .pdf-page-slot[data-page="${pdfPage}"]`)?.scrollIntoView({ block: 'start' });
   updatePageInfo();
 }
@@ -1084,12 +1130,12 @@ function setScale(value: number) {
   void renderPdfPages();
 }
 async function fitPdf(kind: 'width' | 'page') {
-  if (!pdfDoc) return;
-  const page = await pdfDoc.getPage(1);
-  const viewport = page.getViewport({ scale: 1 });
+  if (!pdfPreviewImages.length) return;
+  const width = pdfPreviewSize[0] * 72 / 25.4;
+  const height = pdfPreviewSize[1] * 72 / 25.4;
   const container = document.getElementById('pdfPages')!;
-  setScale(kind === 'width' ? (container.clientWidth - 34) / viewport.width :
-    Math.min((container.clientWidth - 34) / viewport.width, (container.clientHeight - 34) / viewport.height));
+  setScale(kind === 'width' ? (container.clientWidth - 34) / width :
+    Math.min((container.clientWidth - 34) / width, (container.clientHeight - 34) / height));
 }
 async function exportPdf() {
   if (!pdfBytes || pdfBusy || pdfDirty) {

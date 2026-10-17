@@ -22,4 +22,3 @@ if (process.argv.includes('--watch')) {
 }
 copyFileSync('node_modules/katex/dist/katex.min.css', 'dist/katex.min.css');
 cpSync('node_modules/katex/dist/fonts', 'dist/fonts', { recursive: true });
-copyFileSync('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs', 'dist/pdf.worker.min.mjs');

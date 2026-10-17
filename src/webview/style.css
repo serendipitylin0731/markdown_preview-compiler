@@ -84,6 +84,8 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .margin-editor p { margin: 0; font-size: 12px; opacity: .8; text-align: center; }
 .margin-sheet { position: relative; height: 230px; background: white; border: 1px solid #9caab8; box-shadow: 0 2px 8px #0004; cursor: crosshair; touch-action: none; }
 .margin-selection { position: absolute; border: 2px solid #2376bb; background: #2376bb2b; pointer-events: none; }
+.margin-inputs { display: grid; grid-template-columns: repeat(4, minmax(60px, 1fr)); gap: 8px; width: min(430px, 100%); }
+.margin-inputs label { margin: 0; font-size: 12px; }
 .font-setting { grid-column: 1 / -1; }
 .font-setting-row { display: flex; gap: 8px; align-items: flex-end; }
 .font-setting-row label { flex: 1; }
@@ -92,7 +94,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .template-thumb { display: block; width: 80px; height: 110px; background: white; box-shadow: 0 1px 5px #0004; background-size: cover; }
 .template-thumb.academic { border-top: 3px solid #9b7c62; border-bottom: 3px solid #9b7c62; }
 .template-thumb.technical { border-top: 6px solid #245482; border-bottom: 2px solid #245482; }
-#printHost { position: fixed; left: -100000px; top: 0; width: max-content; pointer-events: none; color-scheme: light; color: #20242a; background: white;
+#printHost { position: absolute; left: -100000px; top: 0; width: max-content; pointer-events: none; color-scheme: light; color: #20242a; background: white;
   --vscode-foreground: #20242a; --vscode-editor-foreground: #20242a; --vscode-textCodeBlock-background: #f3f6f9;
   --vscode-editorWidget-background: #edf1f5; --vscode-panel-border: #aab4bf; --vscode-textLink-foreground: #155d94;
   --vscode-textBlockQuote-foreground: #495566; --vscode-textBlockQuote-border: #aab4bf; }
@@ -117,9 +119,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .print-header, .print-footer, .print-page-number { position: absolute; font: 11px system-ui, sans-serif; color: #596475; }
 .print-header { left: var(--margin-left); right: var(--margin-right); top: 9px; }
 .print-footer { left: var(--margin-left); right: var(--margin-right); bottom: 9px; }
-.print-page-number { right: var(--margin-right); bottom: 9px; }
-.print-page-number.position-left { left: var(--margin-left); right: auto; }
-.print-page-number.position-center { left: 40%; right: 40%; text-align: center; }
+.print-page-number { right: 10mm; bottom: 7mm; text-align: right; font-size: 12px; }
 .print-cover-content { position: absolute; left: 10%; right: 10%; top: 31%; text-align: center; }
 .print-cover-content h1 { font: 48px Georgia, serif; color: #24496a; }
 .print-cover-content p { margin-top: 80px; font: 17px system-ui; }

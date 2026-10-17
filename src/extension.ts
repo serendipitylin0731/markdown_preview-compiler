@@ -54,11 +54,10 @@ function webviewHtml(webview: vscode.Webview, document: vscode.TextDocument, mod
   const script = webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'dist', 'webview.js'));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'dist', 'katex.min.css'));
   const appCss = webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'dist', 'webview.css'));
-  const worker = webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'dist', 'pdf.worker.min.mjs'));
   const directory = webview.asWebviewUri(vscode.Uri.joinPath(document.uri, '..')).toString();
   const templateUrls = Object.fromEntries(['simple', 'academic', 'technical', 'cover'].map(name =>
     [name, webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.extensionUri, 'assets', 'templates', `${name}.svg`)).toString()]));
-  const boot = JSON.stringify({ mode, worker: worker.toString(), directory, templateUrls }).replace(/</g, '\\u003c');
+  const boot = JSON.stringify({ mode, directory, templateUrls }).replace(/</g, '\\u003c');
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: blob: https:; font-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}' blob:; worker-src blob: ${webview.cspSource}; connect-src ${webview.cspSource} data: blob: https:;">
