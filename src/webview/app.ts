@@ -1365,6 +1365,46 @@ function makePrintBlock(block: Block): HTMLElement {
   applyChinesePrintFont(wrapper);
   return wrapper;
 }
+function splitImageParagraphs(wrapper: HTMLElement): HTMLElement[] {
+  if (!wrapper.querySelector('img')) return [wrapper];
+  const result: HTMLElement[] = [];
+  const push = (child: HTMLElement) => {
+    const part = document.createElement('div');
+    part.className = 'print-block';
+    part.append(child);
+    result.push(part);
+  };
+  for (const child of [...wrapper.children]) {
+    if ((child instanceof HTMLUListElement || child instanceof HTMLOListElement) && child.querySelector('img')) {
+      const start = child instanceof HTMLOListElement ? child.start : 1;
+      [...child.children].forEach((item, index) => {
+        const list = child.cloneNode(false) as HTMLUListElement | HTMLOListElement;
+        if (list instanceof HTMLOListElement) list.start = start + index;
+        list.append(item);
+        push(list);
+      });
+      continue;
+    }
+    if (!(child instanceof HTMLParagraphElement) || !child.querySelector('img')) {
+      push(child as HTMLElement);
+      continue;
+    }
+    let paragraph = child.cloneNode(false) as HTMLParagraphElement;
+    const flush = () => {
+      if (paragraph.textContent?.trim() || paragraph.querySelector('img')) push(paragraph);
+      paragraph = child.cloneNode(false) as HTMLParagraphElement;
+    };
+    for (const node of [...child.childNodes]) {
+      if (node instanceof Element && (node.matches('img') || node.querySelector('img'))) {
+        flush();
+        paragraph.append(node);
+        flush();
+      } else paragraph.append(node);
+    }
+    flush();
+  }
+  return result.length ? result : [wrapper];
+}
 function waitImages(container: HTMLElement) {
   const images = [...container.querySelectorAll<HTMLImageElement>('img')];
   return Promise.all(images.map(img => img.complete ? Promise.resolve() : new Promise<void>(resolve => {
@@ -1431,6 +1471,20 @@ async function paginate() {
     boundaries.push({ line, page: pages.length, type });
   };
   const contentHeight = () => content.clientHeight;
+  const fitImagesToPage = (element: HTMLElement) => {
+    for (const image of element.querySelectorAll<HTMLImageElement>('img')) {
+      const overflow = content.scrollHeight - contentHeight();
+      if (overflow <= 2) break;
+      const rect = image.getBoundingClientRect();
+      if (!rect.width || !rect.height) continue;
+      const scale = Math.max(0.01, (rect.height - overflow - 4) / rect.height);
+      if (scale < 1) {
+        image.style.width = `${rect.width * scale}px`;
+        image.style.height = `${rect.height * scale}px`;
+        image.style.maxHeight = 'none';
+      }
+    }
+  };
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
     const block = blocks[blockIndex];
     const desiredTemplate = templateForBlock(blockIndex);
@@ -1442,109 +1496,124 @@ async function paginate() {
     if (/^\s*<!--\s*pagebreak\s*-->\s*$/i.test(block.raw)) {
       nextPage(blocks[blockIndex + 1]?.line ?? block.line, 'manual'); continue;
     }
-    const element = makePrintBlock(block);
-    content.append(element);
-    await localizeImages(element);
-    await waitImages(element);
-    await renderMermaid(element);
-    if (content.scrollHeight <= contentHeight() + 2) continue;
-    content.removeChild(element);
-    const table = element.querySelector('table');
-    const rows = table ? [...table.querySelectorAll('tbody tr')] : [];
-    const pre = element.querySelector('pre');
-    const lines = pre?.textContent?.includes('\n') ? pre.textContent.split('\n') : [];
-    const canFlow = rows.length > 1 || lines.length > 1 || (!table && !pre && !!element.querySelector('p, blockquote, li'));
-    if (content.children.length && !canFlow) nextPage(block.line);
-    content.append(element);
-    if (content.scrollHeight <= contentHeight() + 2) continue;
-    // Rows of an oversized table can continue on a later page with its header.
-    if (rows.length > 1) {
+    for (const element of splitImageParagraphs(makePrintBlock(block))) {
+      content.append(element);
+      await localizeImages(element);
+      await waitImages(element);
+      await renderMermaid(element);
+      if (content.scrollHeight <= contentHeight() + 2) continue;
       content.removeChild(element);
-      let current: HTMLElement | null = null;
-      for (const row of rows) {
-        if (!current) {
-          current = element.cloneNode(true) as HTMLElement;
-          current.querySelector('tbody')!.innerHTML = '';
-          content.append(current);
-        }
-        current.querySelector('tbody')!.append(row.cloneNode(true));
-        if (content.scrollHeight > contentHeight() + 2) {
-          const currentRows = current.querySelectorAll('tbody tr');
-          if (currentRows.length === 1 && content.children.length > 1) {
-            current.remove(); nextPage(block.line); content.append(current);
-          } else if (currentRows.length > 1) {
-            currentRows[currentRows.length - 1].remove();
-            nextPage(block.line); current = element.cloneNode(true) as HTMLElement;
-            current.querySelector('tbody')!.innerHTML = '';
-            current.querySelector('tbody')!.append(row.cloneNode(true));
-            content.append(current);
-          }
-        }
+      const table = element.querySelector('table');
+      const rows = table ? [...table.querySelectorAll('tbody tr')] : [];
+      const pre = element.querySelector('pre');
+      if (element.querySelector('img') && rows.length <= 1 && !pre) {
+        // Keep pictures on one page. A paragraph containing an image must never
+        // enter the text fragment path below, which clips cloned DOM by height.
+        if (content.children.length) nextPage(block.line);
+        content.append(element);
+        fitImagesToPage(element);
+        if (content.scrollHeight <= contentHeight() + 2) continue;
+        // A paragraph can contain more text than a page even after its pictures
+        // shrink. Keep the pictures visible instead of clipping the whole block.
+        element.style.overflow = 'visible';
+        continue;
       }
-      continue;
-    }
-    // Long preformatted content is split on lines; the original Markdown remains intact.
-    if (lines.length > 1) {
-      content.removeChild(element);
-      let current: HTMLElement | null = null;
-      for (const line of lines) {
-        if (!current) {
-          current = element.cloneNode(true) as HTMLElement;
-          current.querySelector('pre')!.textContent = '';
-          content.append(current);
-        }
-        const currentPre = current.querySelector('pre')!;
-        const old = currentPre.textContent || '';
-        currentPre.textContent = old + (old ? '\n' : '') + line;
-        if (content.scrollHeight > contentHeight() + 2) {
-          if (!old && content.children.length > 1) {
-            current.remove(); nextPage(block.line); content.append(current);
-          } else if (old) {
-            currentPre.textContent = old; nextPage(block.line);
+      const lines = pre?.textContent?.includes('\n') ? pre.textContent.split('\n') : [];
+      const canFlow = rows.length > 1 || lines.length > 1 || (!table && !pre && !!element.querySelector('p, blockquote, li'));
+      if (content.children.length && !canFlow) nextPage(block.line);
+      content.append(element);
+      if (content.scrollHeight <= contentHeight() + 2) continue;
+      // Rows of an oversized table can continue on a later page with its header.
+      if (rows.length > 1) {
+        content.removeChild(element);
+        let current: HTMLElement | null = null;
+        for (const row of rows) {
+          if (!current) {
             current = element.cloneNode(true) as HTMLElement;
-            current.querySelector('pre')!.textContent = line;
+            current.querySelector('tbody')!.innerHTML = '';
             content.append(current);
           }
+          current.querySelector('tbody')!.append(row.cloneNode(true));
+          if (content.scrollHeight > contentHeight() + 2) {
+            const currentRows = current.querySelectorAll('tbody tr');
+            if (currentRows.length === 1 && content.children.length > 1) {
+              current.remove(); nextPage(block.line); content.append(current);
+            } else if (currentRows.length > 1) {
+              currentRows[currentRows.length - 1].remove();
+              nextPage(block.line); current = element.cloneNode(true) as HTMLElement;
+              current.querySelector('tbody')!.innerHTML = '';
+              current.querySelector('tbody')!.append(row.cloneNode(true));
+              content.append(current);
+            }
+          }
+          if (content.scrollHeight > contentHeight() + 2 && current.querySelectorAll('tbody tr').length === 1)
+            fitImagesToPage(current);
         }
+        continue;
       }
-    } else {
-      // Continue text at rendered line boundaries, using any remaining room on this page.
-      content.removeChild(element);
-      const probe = document.createElement('div');
-      probe.className = 'print-fragment';
-      probe.style.height = '0';
-      const probeClone = element.cloneNode(true) as HTMLElement;
-      probeClone.style.position = 'absolute'; probeClone.style.top = '0'; probeClone.style.left = '0'; probeClone.style.width = '100%';
-      probe.append(probeClone); content.append(probe);
-      const lineBottoms = textLineBottoms(probeClone);
-      const fullHeight = Math.max(probeClone.getBoundingClientRect().height, (lineBottoms.at(-1) || 0) + 2);
-      probe.remove();
-      let offset = 0;
-      while (offset < fullHeight - 1) {
-        const last = content.lastElementChild as HTMLElement | null;
-        const occupied = last ? last.getBoundingClientRect().bottom - content.getBoundingClientRect().top : 0;
-        const available = contentHeight() - occupied;
-        const nextLine = lineBottoms.find(bottom => bottom > offset + 1);
-        if (available < (nextLine ? nextLine - offset + 1 : 1)) { nextPage(block.line); continue; }
-        let height = Math.min(available, fullHeight - offset);
-        let nextOffset = offset + height;
-        if (nextOffset < fullHeight - 1 && lineBottoms.length) {
-          const lastLine = lineBottoms.filter(bottom => bottom > offset + 1 && bottom <= nextOffset - 2).at(-1);
-          if (!lastLine) {
-            if (content.children.length) { nextPage(block.line); continue; }
-          } else {
-            nextOffset = lastLine >= lineBottoms.at(-1)! - 1 ? fullHeight : lastLine + 1;
-            height = Math.min(available, nextOffset - offset);
+      // Long preformatted content is split on lines; the original Markdown remains intact.
+      if (lines.length > 1) {
+        content.removeChild(element);
+        let current: HTMLElement | null = null;
+        for (const line of lines) {
+          if (!current) {
+            current = element.cloneNode(true) as HTMLElement;
+            current.querySelector('pre')!.textContent = '';
+            content.append(current);
+          }
+          const currentPre = current.querySelector('pre')!;
+          const old = currentPre.textContent || '';
+          currentPre.textContent = old + (old ? '\n' : '') + line;
+          if (content.scrollHeight > contentHeight() + 2) {
+            if (!old && content.children.length > 1) {
+              current.remove(); nextPage(block.line); content.append(current);
+            } else if (old) {
+              currentPre.textContent = old; nextPage(block.line);
+              current = element.cloneNode(true) as HTMLElement;
+              current.querySelector('pre')!.textContent = line;
+              content.append(current);
+            }
           }
         }
-        const fragment = document.createElement('div');
-        fragment.className = 'print-fragment';
-        fragment.style.height = `${height}px`;
-        const clone = element.cloneNode(true) as HTMLElement;
-        clone.style.position = 'absolute'; clone.style.top = `-${offset}px`; clone.style.left = '0'; clone.style.width = '100%';
-        fragment.append(clone); content.append(fragment);
-        offset = nextOffset;
-        if (offset < fullHeight - 1) nextPage(block.line);
+      } else {
+        // Continue text at rendered line boundaries, using any remaining room on this page.
+        content.removeChild(element);
+        const probe = document.createElement('div');
+        probe.className = 'print-fragment';
+        probe.style.height = '0';
+        const probeClone = element.cloneNode(true) as HTMLElement;
+        probeClone.style.position = 'absolute'; probeClone.style.top = '0'; probeClone.style.left = '0'; probeClone.style.width = '100%';
+        probe.append(probeClone); content.append(probe);
+        const lineBottoms = textLineBottoms(probeClone);
+        const fullHeight = Math.max(probeClone.getBoundingClientRect().height, (lineBottoms.at(-1) || 0) + 2);
+        probe.remove();
+        let offset = 0;
+        while (offset < fullHeight - 1) {
+          const last = content.lastElementChild as HTMLElement | null;
+          const occupied = last ? last.getBoundingClientRect().bottom - content.getBoundingClientRect().top : 0;
+          const available = contentHeight() - occupied;
+          const nextLine = lineBottoms.find(bottom => bottom > offset + 1);
+          if (available < (nextLine ? nextLine - offset + 1 : 1)) { nextPage(block.line); continue; }
+          let height = Math.min(available, fullHeight - offset);
+          let nextOffset = offset + height;
+          if (nextOffset < fullHeight - 1 && lineBottoms.length) {
+            const lastLine = lineBottoms.filter(bottom => bottom > offset + 1 && bottom <= nextOffset - 2).at(-1);
+            if (!lastLine) {
+              if (content.children.length) { nextPage(block.line); continue; }
+            } else {
+              nextOffset = lastLine >= lineBottoms.at(-1)! - 1 ? fullHeight : lastLine + 1;
+              height = Math.min(available, nextOffset - offset);
+            }
+          }
+          const fragment = document.createElement('div');
+          fragment.className = 'print-fragment';
+          fragment.style.height = `${height}px`;
+          const clone = element.cloneNode(true) as HTMLElement;
+          clone.style.position = 'absolute'; clone.style.top = `-${offset}px`; clone.style.left = '0'; clone.style.width = '100%';
+          fragment.append(clone); content.append(fragment);
+          offset = nextOffset;
+          if (offset < fullHeight - 1) nextPage(block.line);
+        }
       }
     }
   }

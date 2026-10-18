@@ -277,6 +277,71 @@ test('PDF embeds both relative and web images supplied by the extension host', a
   await page.close();
 });
 
+test('PDF moves a picture to the next page and scales an oversized picture without cropping', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const imageData = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 400; canvas.height = 1800;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#eeeeee'; context.fillRect(0, 0, 400, 1800);
+    context.fillStyle = '#0044ff'; context.fillRect(0, 0, 400, 100);
+    context.fillStyle = '#ff2200'; context.fillRect(0, 1700, 400, 100);
+    const tall = canvas.toDataURL('image/png');
+    canvas.height = 500;
+    context.fillStyle = '#00aa44'; context.fillRect(0, 0, 400, 500);
+    return { tall, regular: canvas.toDataURL('image/png') };
+  });
+  const source = `${('填充内容'.repeat(12) + '\n\n').repeat(14)}图片前文字 ![普通图片](./regular.png) 图片后文字\n\n![完整图片](./portrait.png)\n`;
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: { fontSize: 18 }, templates: [] });
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage').length === 2);
+  const requests = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage'));
+  for (const request of requests) await deliver(page, { type: 'imageResolved', id: request.id,
+    data: request.source.endsWith('regular.png') ? imageData.regular : imageData.tall });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const layout = await page.evaluate(() => {
+    const pages = [...document.querySelectorAll('#printHost .print-page')];
+    const images = [...document.querySelectorAll('#printHost .print-content img')].map(image => {
+      const imagePage = image.closest('.print-page');
+      const rect = image.getBoundingClientRect();
+      const area = image.closest('.print-content').getBoundingClientRect();
+      return { page: pages.indexOf(imagePage), alt: image.alt,
+        top: rect.top, bottom: rect.bottom, areaTop: area.top, areaBottom: area.bottom,
+        width: rect.width, height: rect.height, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight };
+    });
+    return { images, fragments: document.querySelectorAll('#printHost .print-fragment img').length };
+  });
+  assert.equal(layout.images.length, 2);
+  assert.ok(layout.images[0].page > 0, `image stayed on a partly filled page: ${JSON.stringify(layout)}`);
+  assert.ok(layout.images[1].page > layout.images[0].page, JSON.stringify(layout));
+  assert.equal(layout.fragments, 0);
+  for (const image of layout.images) {
+    assert.ok(image.top >= image.areaTop - 2 && image.bottom <= image.areaBottom + 2, JSON.stringify(layout));
+    assert.ok(Math.abs(image.width / image.height - image.naturalWidth / image.naturalHeight) < 0.005);
+  }
+  assert.ok(Math.abs(layout.images[0].height - 500) < 1, JSON.stringify(layout));
+  assert.ok(layout.images[1].height < layout.images[1].naturalHeight);
+  const lastPage = layout.images[1].page + 1;
+  await page.locator(`#pdfPages .pdf-page-slot[data-page="${lastPage}"]`).scrollIntoViewIfNeeded();
+  await page.waitForFunction(pageNumber => !!document.querySelector(`#pdfPages .pdf-page-slot[data-page="${pageNumber}"] canvas`), lastPage);
+  const colors = await page.evaluate(pageNumber => {
+    const image = document.querySelector('#printHost img[alt="完整图片"]');
+    const rect = image.getBoundingClientRect();
+    const paper = image.closest('.print-page').getBoundingClientRect();
+    const canvas = document.querySelector(`#pdfPages .pdf-page-slot[data-page="${pageNumber}"] canvas`);
+    const pixel = y => {
+      const x = Math.floor((rect.left + rect.width / 2 - paper.left) * canvas.width / paper.width);
+      const py = Math.floor((y - paper.top) * canvas.height / paper.height);
+      return [...canvas.getContext('2d').getImageData(x, py, 1, 1).data].slice(0, 3);
+    };
+    return { first: pixel(rect.top + 10), last: pixel(rect.bottom - 10) };
+  }, lastPage);
+  assert.ok(colors.first[2] > 150 && colors.first[0] < 100, JSON.stringify(colors));
+  assert.ok(colors.last[0] > 150 && colors.last[2] < 100, JSON.stringify(colors));
+  await page.close();
+});
+
 test('README PDF preview and export keep print colors, margins, and footer without linked CSS', async () => {
   const page = await browser.newPage({ viewport: { width: 1280, height: 1250 } });
   await page.goto(base + '/?mode=pdf');

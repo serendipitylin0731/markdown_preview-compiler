@@ -138,7 +138,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .print-content h1 { font-size: calc(2em * var(--print-heading-scale)); }
 .print-content h2 { font-size: calc(1.55em * var(--print-heading-scale)); }
 .print-content h3 { font-size: calc(1.3em * var(--print-heading-scale)); }
-.print-content img { max-height: 75%; object-fit: contain; }
+.print-content img { max-width: 100%; height: auto; object-fit: contain; }
 .print-content pre { white-space: pre-wrap; word-break: break-word; }
 .print-content pre, .print-content :not(pre)>code { background: var(--print-code-bg); }
 #printHost .print-content pre { background: var(--print-code-bg); }
