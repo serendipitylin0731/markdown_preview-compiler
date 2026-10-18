@@ -759,7 +759,7 @@ function settingField(name: string, label: string, type = 'text', min = '') {
 }
 function fontField(name: string, label: string) {
   const current = exportSettings[name] || '';
-  const options = [{ family: '', name: '跟随 VS Code 编辑器字体' }, ...fonts];
+  const options = [{ family: '', name: '默认（中文宋体，英文跟随编辑器）' }, ...fonts];
   if (current && !options.some(font => font.family === current)) options.push({ family: current, name: current });
   return `<label>${label}<select id="set-${name}">${options.map(font =>
     `<option value="${esc(font.family)}" ${font.family === current ? 'selected' : ''}>${esc(font.name)}</option>`).join('')}</select></label>`;
@@ -1297,14 +1297,45 @@ function makePage(number: number, total = 0, cover = false, templateId = exportS
     <div class="print-content markdown-body"></div>
     <div class="print-footer">${esc(exportSettings.footer || '')}</div>
     <div class="print-page-number">${exportSettings.pageNumbers ? number : ''}</div>`;
+  applyChinesePrintFont(page);
   setTemplateArtwork(page, templateId, cover);
   return page;
+}
+function applyChinesePrintFont(container: HTMLElement) {
+  if (exportSettings.fontFamily?.trim()) return;
+  const pattern = /[\p{Script=Han}\u3000-\u303f\uff00-\uffef]+/gu;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+  for (const node of nodes) {
+    const parent = node.parentElement;
+    if (!parent || parent.closest('pre, code, .katex, svg, script, style, .print-chinese')) continue;
+    if (exportSettings.titleFontFamily?.trim() && parent.closest('h1, h2, h3, h4, h5, h6')) continue;
+    const value = node.data;
+    pattern.lastIndex = 0;
+    if (!pattern.test(value)) continue;
+    pattern.lastIndex = 0;
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    for (const match of value.matchAll(pattern)) {
+      const index = match.index || 0;
+      if (index > offset) fragment.append(document.createTextNode(value.slice(offset, index)));
+      const span = document.createElement('span');
+      span.className = 'print-chinese';
+      span.textContent = match[0];
+      fragment.append(span);
+      offset = index + match[0].length;
+    }
+    if (offset < value.length) fragment.append(document.createTextNode(value.slice(offset)));
+    node.replaceWith(fragment);
+  }
 }
 function makePrintBlock(block: Block): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'print-block';
   wrapper.innerHTML = block.html;
   localizeImages(wrapper);
+  applyChinesePrintFont(wrapper);
   return wrapper;
 }
 function waitImages(container: HTMLElement) {
@@ -1344,6 +1375,7 @@ async function paginate() {
       const y = Math.max(0, Math.min(100, Number(position[1]) || 0));
       return `<div class="cover-field cover-${key}" style="left:${x}%;top:${y}%">${esc(value)}</div>`;
     }).join('');
+    applyChinesePrintFont(cover.querySelector<HTMLElement>('.print-cover-content')!);
     host.append(cover); pages.push(cover);
   }
   const templateForBlock = (index: number) => {
@@ -1362,6 +1394,7 @@ async function paginate() {
       const depth = b.raw.match(/^#+/)?.[0].length || 1;
       return `<div style="padding-left:${(depth - 1) * 18}px">${esc(b.raw.replace(/^#+\s*/, '').trim())}</div>`;
     }).join('')}`;
+    applyChinesePrintFont(toc);
     content.append(toc);
   }
   const nextPage = (line = 0, type = 'automatic') => {
@@ -1554,6 +1587,7 @@ async function generatePdf() {
     await fontsReady;
     await document.fonts.ready;
     const pages = await paginate();
+    await document.fonts.ready;
     await waitImages(document.getElementById('printHost')!);
     const [width, height] = paperSize();
     const pdf = new jsPDF({ orientation: exportSettings.orientation, unit: 'mm', format: [width, height], compress: true });
@@ -1563,11 +1597,11 @@ async function generatePdf() {
       if (status) status.textContent = `正在生成 PDF：${i + 1} / ${pages.length}`;
       const page = pages[i];
       freezePrintStyles(page);
-      const canvas = await html2canvas(page, { scale: 1.5, useCORS: true, allowTaint: false, backgroundColor: '#fff', logging: false,
+      const canvas = await html2canvas(page, { scale: 2, useCORS: true, allowTaint: false, backgroundColor: '#fff', logging: false,
         width: page.offsetWidth, height: page.offsetHeight, windowWidth: page.offsetWidth, windowHeight: page.offsetHeight });
-      const image = canvas.toDataURL('image/jpeg', 0.92);
+      const image = canvas.toDataURL('image/png');
       previewImages.push(image);
-      pdf.addImage(image, 'JPEG', 0, 0, width, height, undefined, 'FAST');
+      pdf.addImage(image, 'PNG', 0, 0, width, height, undefined, 'FAST');
       // Keep links clickable even though the page artwork is rasterized.
       for (const link of page.querySelectorAll<HTMLAnchorElement>('a[href]')) {
         const href = link.getAttribute('href') || '';
@@ -1685,7 +1719,7 @@ function setFonts(items: any[], importedId?: string) {
     for (const key of ['fontFamily', 'titleFontFamily']) {
       const select = document.getElementById('set-' + key) as HTMLSelectElement;
       const previous = select.value;
-      const options = [{ family: '', name: '跟随 VS Code 编辑器字体' }, ...fonts];
+      const options = [{ family: '', name: '默认（中文宋体，英文跟随编辑器）' }, ...fonts];
       if (previous && !options.some(font => font.family === previous)) options.push({ family: previous, name: previous });
       select.innerHTML = options.map(font =>
         `<option value="${esc(font.family)}">${esc(font.name)}</option>`).join('');

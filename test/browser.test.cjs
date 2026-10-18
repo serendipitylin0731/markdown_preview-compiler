@@ -214,6 +214,34 @@ test('PDF uses the editor font and a readable light print palette in a dark them
   await page.close();
 });
 
+test('PDF lays out consecutive Chinese characters in one Songti font run', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '中文排版整齐测试\n\n中文宋体和 English 混排。\n', version: 1,
+    settings: { editorFontFamily: '"DejaVu Sans Mono", monospace' }, exportSettings: { fontSize: 18 }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const layout = await page.evaluate(() => {
+    const paper = document.querySelector('#printHost .print-page');
+    const content = paper.querySelector('.print-content');
+    const span = content.querySelector('p .print-chinese');
+    const node = span.firstChild;
+    const rects = [...node.textContent].map((_, i) => {
+      const range = document.createRange(); range.setStart(node, i); range.setEnd(node, i + 1);
+      const rect = range.getBoundingClientRect(); return { left: rect.left, top: rect.top, width: rect.width };
+    });
+    return { text: span.textContent, font: getComputedStyle(span).fontFamily, bodyFont: getComputedStyle(content).fontFamily,
+      rects, scale: document.querySelector('#pdfPages canvas').width / paper.offsetWidth };
+  });
+  assert.equal(layout.text, '中文排版整齐测试');
+  assert.match(layout.font, /Songti SC.*SimSun.*Noto Serif CJK SC/);
+  assert.match(layout.bodyFont, /DejaVu Sans Mono/);
+  assert.ok(layout.scale >= 1.9);
+  assert.ok(Math.max(...layout.rects.map(rect => rect.top)) - Math.min(...layout.rects.map(rect => rect.top)) < 0.5);
+  assert.ok(Math.max(...layout.rects.map(rect => rect.width)) - Math.min(...layout.rects.map(rect => rect.width)) < 0.5);
+  await page.close();
+});
+
 test('README PDF preview and export keep print colors, margins, and footer without linked CSS', async () => {
   const page = await browser.newPage({ viewport: { width: 1280, height: 1250 } });
   await page.goto(base + '/?mode=pdf');

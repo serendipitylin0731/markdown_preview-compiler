@@ -130,6 +130,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
   --vscode-textBlockQuote-foreground: #495566; --vscode-textBlockQuote-border: #aab4bf; }
 .print-page { position: relative; overflow: hidden; background-color: white; background-position: center; background-size: 100% 100%; color: #20242a; }
 .print-content { position: absolute; top: var(--margin-top); bottom: var(--margin-bottom); left: var(--margin-left); right: var(--margin-right); overflow: hidden; color: #20242a; font-family: var(--print-font-family); font-size: var(--print-font-size); line-height: var(--print-line-height); text-align: var(--print-align); }
+.print-chinese { font-family: "Songti SC", SimSun, "Noto Serif CJK SC", "Source Han Serif SC", serif; }
 #printHost .print-content :is(h1, h2, h3, h4, h5, h6, p, li, th, td, blockquote, pre, code, .hljs, .hljs *) { color: #20242a; }
 #printHost .print-content a { color: #155d94; }
 .print-content p { margin-bottom: var(--print-paragraph-gap); text-indent: var(--print-indent); }
