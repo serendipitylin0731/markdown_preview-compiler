@@ -98,6 +98,15 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .template-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 .template-settings, .cover-position-settings { grid-column: 1 / -1; border-bottom: 1px solid var(--vscode-panel-border, #8886); margin-bottom: 12px; padding-bottom: 12px; }
 .template-settings p, .cover-position-settings p { font-size: 12px; opacity: .8; }
+.template-import { display: grid; gap: 10px; max-height: min(70vh, 760px); overflow: auto; }
+.template-import p { margin: 0; font-size: 12px; line-height: 1.5; opacity: .8; }
+.template-import-head, .template-import-row { display: grid; grid-template-columns: minmax(90px, .7fr) repeat(2, minmax(120px, 1fr)); gap: 8px; align-items: start; }
+.template-import-head { font-size: 12px; font-weight: 700; opacity: .8; }
+.template-import-row { border-top: 1px solid var(--vscode-panel-border, #8886); padding-top: 8px; }
+.template-import-row strong { font-size: 12px; padding-top: 8px; }
+.template-import-cell { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; min-width: 0; }
+.template-import-cell small { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .75; }
+.template-import-cell img { display: block; max-width: 100%; height: 86px; object-fit: contain; background: white; border: 1px solid #8886; }
 .cover-position-settings { display: flex; flex-direction: column; align-items: center; gap: 7px; }
 .cover-position-settings p { margin: 0 0 4px; text-align: center; }
 .cover-sheet { position: relative; height: 330px; max-width: 100%; background: white; border: 1px solid #9caab8; box-shadow: 0 2px 8px #0004; overflow: hidden; touch-action: none; }

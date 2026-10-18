@@ -5,6 +5,8 @@ import * as crypto from 'node:crypto';
 type Mode = 'preview' | 'visual' | 'pdf';
 type Panel = { panel: vscode.WebviewPanel; uri: vscode.Uri; mode: Mode; autoExport?: boolean };
 const panels = new Set<Panel>();
+const templateDrafts = new Map<Panel, Record<string, { file: string; name: string }>>();
+const templateSlotPattern = /^(a4|a5|letter)-(portrait|landscape)-(body|cover)$/;
 const boundariesByUri = new Map<string, Array<{ line: number; page: number; type: string }>>();
 const editorScrollEchoUntil = new Map<string, number>();
 let boundaryDecoration: vscode.TextEditorDecorationType;
@@ -70,11 +72,24 @@ function webviewHtml(webview: vscode.Webview, document: vscode.TextDocument, mod
 </body></html>`;
 }
 
+function panelTitle(document: vscode.TextDocument, mode: Mode) {
+  return `${path.basename(document.uri.fsPath)} · ${mode === 'visual' ? '预览编辑' : mode === 'pdf' ? 'PDF 预览' : '预览'}`;
+}
+
 async function openPanel(document: vscode.TextDocument, mode: Mode, column: vscode.ViewColumn, autoExport = false) {
   lastDocument = document.uri;
-  const existing = [...panels].find(p => p.uri.toString() === document.uri.toString() && p.mode === mode);
-  if (existing) { existing.panel.reveal(column); if (autoExport) post(existing, { type: 'exportNow' }); return existing; }
-  const panel = vscode.window.createWebviewPanel('markdownCompiler', `${path.basename(document.uri.fsPath)} · ${mode === 'visual' ? '预览编辑' : mode === 'pdf' ? 'PDF 预览' : '预览'}`, column, {
+  const existing = [...panels].find(p => p.uri.toString() === document.uri.toString());
+  if (existing) {
+    if (existing.mode !== mode) {
+      existing.mode = mode;
+      existing.autoExport = autoExport;
+      existing.panel.title = panelTitle(document, mode);
+      existing.panel.webview.html = webviewHtml(existing.panel.webview, document, mode);
+    } else if (autoExport) post(existing, { type: 'exportNow' });
+    existing.panel.reveal(mode === 'preview' ? vscode.ViewColumn.Two : undefined);
+    return existing;
+  }
+  const panel = vscode.window.createWebviewPanel('markdownCompiler', panelTitle(document, mode), column, {
     enableScripts: true, retainContextWhenHidden: true,
     localResourceRoots: [extensionContext.extensionUri, vscode.Uri.joinPath(document.uri, '..'), extensionContext.globalStorageUri]
   });
@@ -83,6 +98,7 @@ async function openPanel(document: vscode.TextDocument, mode: Mode, column: vsco
   panel.webview.html = webviewHtml(panel.webview, document, mode);
   panel.onDidDispose(() => {
     panels.delete(state);
+    void discardTemplateDraft(state);
     if (![...panels].some(other => other.uri.toString() === state.uri.toString())) {
       boundariesByUri.delete(state.uri.toString());
       refreshBoundaryDecorations();
@@ -96,9 +112,23 @@ function post(state: Panel, message: unknown) { void state.panel.webview.postMes
 function templatesFor(state: Panel) {
   return extensionContext.globalState.get<any[]>('templates', []).map(template => ({
     id: template.id, name: template.name,
-    url: state.panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.globalStorageUri, template.file)).toString(),
-    coverUrl: template.coverFile ? state.panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.globalStorageUri, template.coverFile)).toString() : undefined
+    ...(template.file ? { url: templateUrl(state, template.file), coverUrl: template.coverFile ? templateUrl(state, template.coverFile) : undefined } : {}),
+    ...(template.variants ? { variants: Object.fromEntries(Object.entries(template.variants).map(([key, variant]: [string, any]) => [key, {
+      bodyUrl: variant.body ? templateUrl(state, variant.body) : undefined,
+      coverUrl: variant.cover ? templateUrl(state, variant.cover) : undefined
+    }])) } : {})
   }));
+}
+function templateUrl(state: Panel, file: string) {
+  return state.panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionContext.globalStorageUri, file)).toString();
+}
+async function discardTemplateDraft(state: Panel) {
+  const draft = templateDrafts.get(state);
+  templateDrafts.delete(state);
+  if (!draft) return;
+  for (const entry of Object.values(draft)) {
+    try { await vscode.workspace.fs.delete(vscode.Uri.joinPath(extensionContext.globalStorageUri, entry.file)); } catch { /* already removed */ }
+  }
 }
 function fontsFor(state: Panel) {
   return extensionContext.globalState.get<any[]>('fonts', []).map(font => ({
@@ -152,7 +182,6 @@ async function handleMessage(state: Panel, message: any) {
     } else if (message.type === 'split') {
       await showSplit(document);
     } else if (message.type === 'visual') {
-      for (const other of [...panels]) if (other.uri.toString() === document.uri.toString() && other.mode !== 'visual') other.panel.dispose();
       await openPanel(document, 'visual', vscode.ViewColumn.One);
       await extensionContext.globalState.update('lastMode', 'visual');
     } else if (message.type === 'pdf') {
@@ -180,23 +209,52 @@ async function handleMessage(state: Panel, message: any) {
       post(state, { type: 'exportResult', success: true, path: target.fsPath });
       const action = await vscode.window.showInformationMessage(`PDF 已导出：${target.fsPath}`, '打开 PDF');
       if (action === '打开 PDF') await vscode.env.openExternal(target);
-    } else if (message.type === 'importTemplate') {
-      const files = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: '选择正文图片，可附加一张封面图片', filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'svg'] } });
+    } else if (message.type === 'pickTemplateImage') {
+      const slot = String(message.slot || '');
+      if (!templateSlotPattern.test(slot)) throw new Error('无效的模板位置');
+      const files = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: `选择${slot.endsWith('body') ? '内页' : '封面'}图片`, filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'svg'] } });
       if (!files?.[0]) return;
-      if (files.length > 2) throw new Error('最多选择两张图片：正文图片在前，封面图片在后');
+      const bytes = await vscode.workspace.fs.readFile(files[0]);
+      if (bytes.length > 20 * 1024 * 1024) throw new Error('模板图片不能超过 20 MB');
+      const ext = path.extname(files[0].fsPath).toLowerCase();
       await vscode.workspace.fs.createDirectory(extensionContext.globalStorageUri);
+      const draft = templateDrafts.get(state) || {};
+      if (draft[slot]) try { await vscode.workspace.fs.delete(vscode.Uri.joinPath(extensionContext.globalStorageUri, draft[slot].file)); } catch { /* already removed */ }
+      const file = `template-draft-${crypto.randomUUID()}${ext}`;
+      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(extensionContext.globalStorageUri, file), bytes);
+      draft[slot] = { file, name: path.basename(files[0].fsPath) };
+      templateDrafts.set(state, draft);
+      post(state, { type: 'templateImagePicked', slot, name: draft[slot].name, url: templateUrl(state, file) });
+    } else if (message.type === 'removeTemplateImage') {
+      const slot = String(message.slot || '');
+      const draft = templateDrafts.get(state);
+      if (templateSlotPattern.test(slot) && draft?.[slot]) {
+        await vscode.workspace.fs.delete(vscode.Uri.joinPath(extensionContext.globalStorageUri, draft[slot].file));
+        delete draft[slot];
+      }
+    } else if (message.type === 'discardTemplateDraft') {
+      await discardTemplateDraft(state);
+    } else if (message.type === 'saveTemplateImport') {
+      const draft = templateDrafts.get(state) || {};
+      const name = String(message.name || '').trim();
+      if (!name || name.length > 80) throw new Error('请填写 1–80 字的模板名称');
+      if (!Object.keys(draft).some(slot => slot.endsWith('-body'))) throw new Error('至少需要导入一张内页图片');
+      if (Object.keys(draft).some(slot => slot.endsWith('-cover') && !draft[slot.replace(/-cover$/, '-body')]))
+        throw new Error('每张封面都需要同尺寸、同方向的内页图片');
       const id = crypto.randomUUID();
-      const storedFiles: string[] = [];
-      for (let index = 0; index < files.length; index++) {
-        const bytes = await vscode.workspace.fs.readFile(files[index]);
-        if (bytes.length > 20 * 1024 * 1024) throw new Error('模板图片不能超过 20 MB');
-        const fileName = `template-${id}-${index}${path.extname(files[index].fsPath).toLowerCase()}`;
-        await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(extensionContext.globalStorageUri, fileName), bytes);
-        storedFiles.push(fileName);
+      const variants: Record<string, { body?: string; cover?: string }> = {};
+      for (const [slot, entry] of Object.entries(draft)) {
+        const [paper, orientation, kind] = slot.split('-');
+        const key = `${paper}-${orientation}`;
+        const file = `template-${id}-${slot}${path.extname(entry.file)}`;
+        await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(extensionContext.globalStorageUri, file),
+          await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extensionContext.globalStorageUri, entry.file)));
+        (variants[key] ||= {})[kind as 'body' | 'cover'] = file;
       }
       const templates = extensionContext.globalState.get<any[]>('templates', []);
-      templates.push({ id, name: path.basename(files[0].fsPath), file: storedFiles[0], coverFile: storedFiles[1] });
+      templates.push({ id, name, variants });
       await extensionContext.globalState.update('templates', templates);
+      await discardTemplateDraft(state);
       for (const other of panels) post(other, { type: 'templates', templates: templatesFor(other), importedId: other === state ? id : undefined });
     } else if (message.type === 'importFont') {
       const files = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { Fonts: ['ttf', 'otf', 'woff', 'woff2'] } });
@@ -219,9 +277,12 @@ async function handleMessage(state: Panel, message: any) {
     } else if (message.type === 'exportTemplate') {
       const template = extensionContext.globalState.get<any[]>('templates', []).find(t => t.id === message.id);
       if (!template) return;
-      if (!template.file) throw new Error('模板文件不存在');
-      const source = vscode.Uri.joinPath(extensionContext.globalStorageUri, template.file);
-      const target = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(path.join(path.dirname(document.uri.fsPath), template.name)) });
+      const variant = template.variants?.[`${message.paper}-${message.orientation}`]
+        || Object.values(template.variants || {}).find((entry: any) => entry.body);
+      const file = template.file || variant?.body;
+      if (!file) throw new Error('模板文件不存在');
+      const source = vscode.Uri.joinPath(extensionContext.globalStorageUri, file);
+      const target = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(path.join(path.dirname(document.uri.fsPath), template.name + path.extname(file))) });
       if (target) await vscode.workspace.fs.writeFile(target, await vscode.workspace.fs.readFile(source));
     } else if (message.type === 'openLink') {
       const uri = vscode.Uri.parse(message.url);
@@ -250,19 +311,18 @@ async function handleMessage(state: Panel, message: any) {
 }
 
 async function showSplit(document: vscode.TextDocument) {
-  for (const state of [...panels]) if (state.uri.toString() === document.uri.toString() && state.mode !== 'preview') state.panel.dispose();
   await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
   await openPanel(document, 'preview', vscode.ViewColumn.Two);
   await extensionContext.globalState.update('lastMode', 'split');
 }
 
 async function showPdf(document: vscode.TextDocument) {
-  const visual = [...panels].find(p => p.uri.toString() === document.uri.toString() && p.mode === 'visual' && p.panel.active);
-  if (visual) {
-    post(visual, { type: 'showPdf' });
-    visual.panel.reveal();
+  const existing = [...panels].find(p => p.uri.toString() === document.uri.toString());
+  if (existing?.mode === 'visual' && existing.panel.active) {
+    post(existing, { type: 'showPdf' });
+    existing.panel.reveal();
   } else {
-    await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
+    if (!existing) await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
     await openPanel(document, 'pdf', vscode.ViewColumn.Two);
   }
   await extensionContext.globalState.update('lastMode', 'pdf');
@@ -278,7 +338,6 @@ export function activate(context: vscode.ExtensionContext) {
       if (!document) return;
       const preferred = context.globalState.get<string>('lastMode', 'split');
       if (preferred === 'visual') {
-        for (const state of [...panels]) if (state.uri.toString() === document.uri.toString() && state.mode !== 'visual') state.panel.dispose();
         await openPanel(document, 'visual', vscode.ViewColumn.One);
       }
       else if (preferred === 'pdf') await showPdf(document);
@@ -300,7 +359,6 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('markdownCompiler.visual', async () => {
       const document = await currentDocument(); if (document) {
-        for (const state of [...panels]) if (state.uri.toString() === document.uri.toString() && state.mode !== 'visual') state.panel.dispose();
         await openPanel(document, 'visual', vscode.ViewColumn.One);
         await context.globalState.update('lastMode', 'visual');
       }

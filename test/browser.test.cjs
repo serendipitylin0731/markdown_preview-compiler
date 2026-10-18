@@ -367,6 +367,40 @@ test('PDF actions appear only while PDF preview is open', async () => {
   await page.close();
 });
 
+test('template import requires a body image and limits paper choices to supplied variants', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '# 封面标题\n', version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
+  await page.locator('button[data-action=settings]').click();
+  assert.equal(await page.locator('#set-coverDateText').inputValue(), await page.evaluate(() => new Date().toLocaleDateString('zh-CN')));
+  await page.locator('button[data-action=importTemplate]').click();
+  assert.equal(await page.locator('button[data-action=saveTemplateImport]').isDisabled(), true);
+  await page.locator('#templateImportName').fill('实验模板');
+  await page.locator('button[data-action=pickTemplateImage][data-slot=a5-landscape-body]').click();
+  assert.ok(await page.evaluate(() => window.__MDC_MESSAGES__.some(m => m.type === 'pickTemplateImage' && m.slot === 'a5-landscape-body')));
+  await deliver(page, { type: 'templateImagePicked', slot: 'a5-landscape-body', name: 'inside.png', url: base + '/assets/templates/simple.svg' });
+  assert.equal(await page.locator('button[data-action=saveTemplateImport]').isEnabled(), true);
+  await page.locator('button[data-action=saveTemplateImport]').click();
+  assert.ok(await page.evaluate(() => window.__MDC_MESSAGES__.some(m => m.type === 'saveTemplateImport' && m.name === '实验模板')));
+  await deliver(page, { type: 'templates', importedId: 'custom-a5', templates: [{ id: 'custom-a5', name: '实验模板', variants: {
+    'a5-landscape': { bodyUrl: base + '/assets/templates/simple.svg' }
+  } }] });
+  assert.equal(await page.locator('input[name=template][value=custom-a5]').isChecked(), true);
+  assert.equal(await page.locator('#set-paper').inputValue(), 'a5');
+  assert.equal(await page.locator('#set-orientation').inputValue(), 'landscape');
+  assert.equal(await page.locator('#set-paper option[value=a4]').evaluate(option => option.disabled), true);
+  assert.equal(await page.locator('#set-orientation option[value=portrait]').evaluate(option => option.disabled), true);
+  assert.match(await page.locator('#coverSheet').evaluate(el => el.style.backgroundImage), /simple\.svg/);
+  await page.locator('#set-coverDateText').fill('2026 年 10 月 18 日');
+  await page.locator('button[data-action=saveSettings]').click();
+  const saved = await page.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'saveSettings')?.value);
+  assert.equal(saved.coverDateText, '2026 年 10 月 18 日');
+  assert.equal(saved.paper, 'a5');
+  assert.equal(saved.orientation, 'landscape');
+  await page.close();
+});
+
 test('preview bottom scroll is bounded and does not oscillate on source echo', async () => {
   const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
   await page.goto(base + '/?mode=preview');

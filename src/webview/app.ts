@@ -98,7 +98,7 @@ let exportSettings: any = {
   fontFamily: '', titleFontFamily: '', headingScale: 1,
   headingGap: 1, pageNumberFormat: 'fraction',
   codeBackground: '#f4f6f8', tableHeaderBackground: '#eef2f6', tableBorderColor: '#aab4bf',
-  coverSubtitle: '', coverAuthor: '', coverDate: true,
+  coverSubtitle: '', coverAuthor: '', coverDate: true, coverDateText: '',
   coverPositions: { title: [50, 36], subtitle: [50, 47], author: [50, 73], date: [50, 81] }
 };
 function normalizeExportSettings() {
@@ -113,6 +113,7 @@ function normalizeExportSettings() {
   }
 }
 let templates: any[] = [];
+let templateImportDraft: { name: string; slots: Record<string, { name: string; url: string }> } | null = null;
 let blocks: Block[] = [];
 let pendingEdit: any = null;
 let editTimer: number | undefined;
@@ -368,7 +369,8 @@ function onFocus(event: FocusEvent) {
 }
 function onInput(event: Event) {
   const target = event.target as HTMLElement;
-  if (target.id === 'set-coverSubtitle' || target.id === 'set-coverAuthor') updateCoverSheet();
+  if (target.id === 'templateImportName' && templateImportDraft) templateImportDraft.name = (target as HTMLInputElement).value;
+  if (['set-coverSubtitle', 'set-coverAuthor', 'set-coverDateText'].includes(target.id)) updateCoverSheet();
   const block = target.closest('.md-block') as HTMLElement | null;
   if (block && target.closest('.block-content')) {
     if (target.matches('.direct-inline-math')) {
@@ -674,6 +676,30 @@ function paperSizeFor(paper: string, orientation: string): [number, number] {
 function selectedTemplate() {
   return (document.querySelector('input[name=template]:checked') as HTMLInputElement | null)?.value || exportSettings.template;
 }
+function todayDateText() { return new Date().toLocaleDateString('zh-CN'); }
+function customTemplate(id: string) { return templates.find(template => template.id === id); }
+function hasBodyVariant(id: string, paper: string, orientation: string) {
+  const template = customTemplate(id);
+  return !template?.variants || Boolean(template.variants[`${paper}-${orientation}`]?.bodyUrl);
+}
+function availableVariant(id: string): [string, string] {
+  const template = customTemplate(id);
+  const key = Object.keys(template?.variants || {}).find(value => template.variants[value]?.bodyUrl) || 'a4-portrait';
+  return key.split('-') as [string, string];
+}
+function updateVariantSelectors() {
+  const paper = document.getElementById('set-paper') as HTMLSelectElement | null;
+  const orientation = document.getElementById('set-orientation') as HTMLSelectElement | null;
+  if (!paper || !orientation) return;
+  const id = selectedTemplate();
+  for (const option of paper.options) option.disabled = !['portrait', 'landscape'].some(direction => hasBodyVariant(id, option.value, direction));
+  if (paper.selectedOptions[0]?.disabled) paper.value = availableVariant(id)[0];
+  for (const option of orientation.options) option.disabled = !hasBodyVariant(id, paper.value, option.value);
+  if (orientation.selectedOptions[0]?.disabled)
+    orientation.value = ['portrait', 'landscape'].find(direction => hasBodyVariant(id, paper.value, direction)) || availableVariant(id)[1];
+  const list = document.querySelector<HTMLElement>('.template-list');
+  if (list) list.innerHTML = templateOptions(paper.value, orientation.value, id);
+}
 function setTemplateArtwork(element: HTMLElement, templateId: string, cover = false) {
   const draft = element.id === 'marginSheet' || element.id === 'coverSheet';
   const paper = draft ? (document.getElementById('set-paper') as HTMLSelectElement | null)?.value || exportSettings.paper : exportSettings.paper;
@@ -717,7 +743,7 @@ function updateCoverSheet() {
     title: blocks.find(block => /^#\s+/.test(block.raw))?.raw.replace(/^#\s+/, '').trim() || '文档标题',
     subtitle: (document.getElementById('set-coverSubtitle') as HTMLInputElement).value || '副标题',
     author: (document.getElementById('set-coverAuthor') as HTMLInputElement).value || '作者',
-    date: new Date().toLocaleDateString('zh-CN')
+    date: (document.getElementById('set-coverDateText') as HTMLInputElement).value || todayDateText()
   };
   for (const key of ['title', 'subtitle', 'author', 'date']) {
     const field = sheet.querySelector<HTMLElement>(`[data-cover-field="${key}"]`)!;
@@ -796,7 +822,7 @@ function settingsDialog() {
   marginDraft = Object.fromEntries(['marginTop','marginRight','marginBottom','marginLeft'].map(key => [key, exportSettings[key]]));
   coverDraft = Object.fromEntries(['title', 'subtitle', 'author', 'date'].map(key => [key, [...(exportSettings.coverPositions?.[key] || [50, 50])]])) as Record<string, [number, number]>;
   showDialog('PDF 排版设置', `<div class="setting-grid">
-    <div class="template-settings"><strong>模板</strong><div class="template-list">${templateOptions()}</div><button data-action="importTemplate">导入图片模板</button><p>选择正文图片，可再选一张封面图片。应用模板后可在文档预览中框选文字，将模板用于该范围。</p></div>
+    <div class="template-settings"><strong>模板</strong><div class="template-list">${templateOptions()}</div><button data-action="importTemplate">导入图片模板</button><p>导入后选择有内页的纸张和方向；封面图片可选。应用模板后可在文档预览中框选文字，将模板用于该范围。</p></div>
     <label>纸张<select id="set-paper"><option value="a4">A4</option><option value="a5">A5</option><option value="letter">Letter</option></select></label>
     <label>方向<select id="set-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
     <div class="margin-editor"><strong>页边距</strong><p>点击确定左上角，右下角自动对称；拖动可调整，靠近对称位置时自动吸附</p><div id="marginSheet" class="margin-sheet" role="img" aria-label="点击或拖动调整 PDF 正文区域"><div id="marginSelection" class="margin-selection"></div><span id="marginPageNumber" class="margin-page-number">1 / 3</span></div><p id="marginText"></p>
@@ -815,11 +841,31 @@ function settingsDialog() {
     <label><input id="set-cover" type="checkbox" ${exportSettings.cover ? 'checked' : ''}>封面页</label>
     ${settingField('coverSubtitle','封面副标题')}${settingField('coverAuthor','封面作者')}
     <label><input id="set-coverDate" type="checkbox" ${exportSettings.coverDate !== false ? 'checked' : ''}>显示封面日期</label>
+    <label>封面日期文字<input id="set-coverDateText" type="text" value="${esc(exportSettings.coverDateText || todayDateText())}"></label>
     <div class="cover-position-settings"><strong>封面文字位置</strong><p>在封面模板上拖动文字；选中文字后也可用方向键微调，按 Shift 每次移动 5%。</p><div id="coverSheet" class="cover-sheet" aria-label="拖动调整封面文字位置">${['title','subtitle','author','date'].map((key, i) => `<div class="cover-drag-field ${key}" data-cover-field="${key}" role="button" tabindex="0" aria-label="拖动${['标题','副标题','作者','日期'][i]}"><span class="cover-drag-label">${['标题','副标题','作者','日期'][i]}</span><span class="cover-drag-value"></span></div>`).join('')}</div></div>
     <label><input id="set-toc" type="checkbox" ${exportSettings.toc ? 'checked' : ''}>自动目录</label>
     </div><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="saveSettings" class="primary">应用</button></div>`);
   for (const key of ['paper','orientation','align','pageNumberFormat']) (document.getElementById('set-' + key) as HTMLSelectElement).value = exportSettings[key];
+  updateVariantSelectors();
   updateMarginSheet(); bindMarginSheet(); updateCoverSheet(); bindCoverSheet();
+}
+function templateImportDialog() {
+  const draft = templateImportDraft ||= { name: '', slots: {} };
+  const papers = [{ key: 'a4', name: 'A4' }, { key: 'a5', name: 'A5' }, { key: 'letter', name: 'Letter' }];
+  const rows = papers.flatMap(paper => ['portrait', 'landscape'].map(orientation => {
+    const key = `${paper.key}-${orientation}`;
+    const cells = ['body', 'cover'].map(kind => {
+      const slot = `${key}-${kind}`;
+      const selected = draft.slots[slot];
+      return `<div class="template-import-cell"><button data-action="pickTemplateImage" data-slot="${slot}">${selected ? '更换' : '选择'}${kind === 'body' ? '内页' : '封面'}</button>${selected ? `<button data-action="removeTemplateImage" data-slot="${slot}" aria-label="移除${esc(selected.name)}">移除</button><small title="${esc(selected.name)}">${esc(selected.name)}</small><img src="${esc(selected.url)}" alt="${esc(selected.name)}">` : '<small>未导入</small>'}</div>`;
+    }).join('');
+    return `<div class="template-import-row"><strong>${paper.name} · ${orientation === 'portrait' ? '纵向' : '横向'}</strong>${cells}</div>`;
+  })).join('');
+  showDialog('导入图片模板', `<div class="template-import"><label>模板名称<input id="templateImportName" maxlength="80" value="${esc(draft.name)}" placeholder="例如：学院论文模板"></label>
+    <p>每个纸张与方向可分别导入内页和封面；至少要有一张内页。没有封面时使用同规格内页。未提供内页的规格无法选择。</p>
+    <div class="template-import-head"><span>纸张与方向</span><span>内页（必需其一）</span><span>封面（可选）</span></div>${rows}
+    <p>支持 PNG、JPEG、WebP、SVG；单张不超过 20 MB。建议按对应纸张比例制作，清晰图片建议至少 150 dpi，避免拉伸。</p></div>
+    <div class="dialog-actions"><button data-action="cancelTemplateImport">返回设置</button><button data-action="saveTemplateImport" class="primary" ${Object.keys(draft.slots).some(slot => slot.endsWith('-body')) ? '' : 'disabled'}>保存模板</button></div>`);
 }
 function templateOptions(paper = exportSettings.paper, orientation = exportSettings.orientation, selected = exportSettings.template) {
   const all = [
@@ -827,27 +873,23 @@ function templateOptions(paper = exportSettings.paper, orientation = exportSetti
     { id: 'sjtu-red', name: '上海交大 · 红' }, { id: 'sjtu-blue', name: '上海交大 · 蓝' }, ...templates
   ];
   return all.map(t => {
-    const background = t.url || templateBackground(t.id, paper, orientation);
+    const previewPaper = hasBodyVariant(t.id, paper, orientation) ? paper : availableVariant(t.id)[0];
+    const previewOrientation = hasBodyVariant(t.id, paper, orientation) ? orientation : availableVariant(t.id)[1];
+    const background = templateBackground(t.id, previewPaper, previewOrientation);
     const [paperWidth, paperHeight] = paperSizeFor(paper, orientation);
     const thumbHeight = orientation === 'landscape' ? 80 : 110;
     const style = `background-image:url(${JSON.stringify(background)});width:${thumbHeight * paperWidth / paperHeight}px;height:${thumbHeight}px`;
     return `<label class="template-option">
     <input type="radio" name="template" value="${esc(t.id)}" ${selected === t.id ? 'checked' : ''}>
     <span class="template-thumb ${esc(t.id)}" style="${esc(style)}"></span>
-    <span>${esc(t.name)}</span>${t.url ? `<button data-action="exportTemplate" data-id="${esc(t.id)}">导出正文</button>` : ''}
+    <span>${esc(t.name)}</span>${!hasBodyVariant(t.id, paper, orientation) ? '<small>当前纸张/方向不可用</small>' : ''}${(t.url || t.variants) ? `<button data-action="exportTemplate" data-id="${esc(t.id)}">导出正文</button>` : ''}
   </label>`;
   }).join('');
 }
 function onChange(event: Event) {
   const target = event.target as HTMLInputElement;
   if (target.id === 'set-paper' || target.id === 'set-orientation' || target.name === 'template' || target.id === 'set-pageNumbers') {
-    if (target.id === 'set-paper' || target.id === 'set-orientation') {
-      const selected = selectedTemplate();
-      const paper = (document.getElementById('set-paper') as HTMLSelectElement).value;
-      const orientation = (document.getElementById('set-orientation') as HTMLSelectElement).value;
-      const list = document.querySelector<HTMLElement>('.template-list');
-      if (list) list.innerHTML = templateOptions(paper, orientation, selected);
-    }
+    if (target.id === 'set-paper' || target.id === 'set-orientation' || target.name === 'template') updateVariantSelectors();
     updateMarginSheet(); updateCoverSheet();
   }
   if (['set-coverDate', 'set-coverSubtitle', 'set-coverAuthor'].includes(target.id)) updateCoverSheet();
@@ -916,12 +958,29 @@ function onClick(event: MouseEvent) {
   }
   if (action === 'settings') return settingsDialog();
   if (action === 'cancelDialog') return closeDialog();
-  if (action === 'importTemplate') return post('importTemplate');
+  if (action === 'importTemplate') { templateImportDraft = { name: '', slots: {} }; return templateImportDialog(); }
+  if (action === 'pickTemplateImage') return post('pickTemplateImage', { slot: button.dataset.slot });
+  if (action === 'removeTemplateImage') {
+    const slot = button.dataset.slot!;
+    delete templateImportDraft?.slots[slot]; post('removeTemplateImage', { slot }); return templateImportDialog();
+  }
+  if (action === 'cancelTemplateImport') { post('discardTemplateDraft'); templateImportDraft = null; return settingsDialog(); }
+  if (action === 'saveTemplateImport') {
+    if (!templateImportDraft?.name.trim()) return toast('请填写模板名称', true);
+    if (!Object.keys(templateImportDraft.slots).some(slot => slot.endsWith('-body'))) return toast('至少需要一张内页图片', true);
+    if (Object.keys(templateImportDraft.slots).some(slot => slot.endsWith('-cover') && !templateImportDraft!.slots[slot.replace(/-cover$/, '-body')])) return toast('封面需要相同纸张和方向的内页', true);
+    return post('saveTemplateImport', { name: templateImportDraft.name.trim() });
+  }
   if (action === 'importFont') return post('importFont');
-  if (action === 'exportTemplate') return post('exportTemplate', { id: button.dataset.id });
+  if (action === 'exportTemplate') return post('exportTemplate', { id: button.dataset.id,
+    paper: (document.getElementById('set-paper') as HTMLSelectElement)?.value || exportSettings.paper,
+    orientation: (document.getElementById('set-orientation') as HTMLSelectElement)?.value || exportSettings.orientation });
   if (action === 'saveSettings') {
     for (const key of ['paper','orientation','align','fontFamily','titleFontFamily','codeBackground','tableHeaderBackground','tableBorderColor','header','footer','pageNumberFormat','coverSubtitle','coverAuthor']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).value;
+    const dateText = (document.getElementById('set-coverDateText') as HTMLInputElement).value.trim();
+    exportSettings.coverDateText = dateText === todayDateText() && !exportSettings.coverDateText ? '' : dateText;
     const chosenTemplate = (document.querySelector('input[name=template]:checked') as HTMLInputElement)?.value || 'simple';
+    if (!hasBodyVariant(chosenTemplate, exportSettings.paper, exportSettings.orientation)) return toast('当前模板不支持所选纸张和方向', true);
     if (chosenTemplate !== exportSettings.template) {
       exportSettings.baseTemplate = exportSettings.template;
       exportSettings.templateRanges = [];
@@ -1089,6 +1148,7 @@ function paperSize() {
 }
 function templateBackground(templateId = exportSettings.template, paper = exportSettings.paper, orientation = exportSettings.orientation) {
   const custom = templates.find(t => t.id === templateId);
+  if (custom?.variants) return custom.variants[`${paper}-${orientation}`]?.bodyUrl || '';
   if (custom?.url) return custom.url;
   if (templateId === 'sjtu-red' || templateId === 'sjtu-blue') return boot.templateUrls?.[`${templateId}-${paper}-${orientation}`];
   if (boot.templateUrls?.[templateId]) return boot.templateUrls[templateId];
@@ -1102,6 +1162,10 @@ function templateBackground(templateId = exportSettings.template, paper = export
 }
 function coverBackground(templateId = exportSettings.template, paper = exportSettings.paper, orientation = exportSettings.orientation) {
   const custom = templates.find(t => t.id === templateId);
+  if (custom?.variants) {
+    const variant = custom.variants[`${paper}-${orientation}`];
+    return variant?.coverUrl || variant?.bodyUrl || '';
+  }
   if (custom?.coverUrl || custom?.url) return custom.coverUrl || custom.url;
   if (templateId === 'sjtu-red' || templateId === 'sjtu-blue') return boot.templateUrls?.[`${templateId}-${paper}-${orientation}-cover`];
   if (boot.templateUrls?.[`${templateId}-cover`]) return boot.templateUrls[`${templateId}-cover`];
@@ -1176,7 +1240,7 @@ async function paginate() {
     const cover = makePage(1, 0, true);
     const fields = [
       ['title', title], ['subtitle', exportSettings.coverSubtitle],
-      ['author', exportSettings.coverAuthor], ['date', exportSettings.coverDate !== false ? new Date().toLocaleDateString('zh-CN') : '']
+      ['author', exportSettings.coverAuthor], ['date', exportSettings.coverDate !== false ? exportSettings.coverDateText || todayDateText() : '']
     ];
     cover.querySelector('.print-cover-content')!.innerHTML = fields.filter(([, value]) => value).map(([key, value]) => {
       const position = exportSettings.coverPositions?.[key] || [50, 50];
@@ -1572,15 +1636,21 @@ window.addEventListener('message', (event: MessageEvent) => {
     exportSettings = { ...exportSettings, ...message.value }; normalizeExportSettings(); pdfDirty = true; schedulePdf();
   } else if (message.type === 'templates') {
     templates = message.templates;
+    if (message.importedId && templateImportDraft) { templateImportDraft = null; settingsDialog(); }
     const list = document.querySelector<HTMLElement>('.template-settings .template-list');
     if (list) {
       list.innerHTML = templateOptions();
       if (message.importedId) {
         const selected = [...list.querySelectorAll<HTMLInputElement>('input[name="template"]')].find(input => input.value === message.importedId);
         if (selected) selected.checked = true;
-        if (templates.find(t => t.id === message.importedId)?.coverUrl) (document.getElementById('set-cover') as HTMLInputElement).checked = true;
+        updateVariantSelectors();
       }
       updateMarginSheet(); updateCoverSheet();
+    }
+  } else if (message.type === 'templateImagePicked') {
+    if (templateImportDraft) {
+      templateImportDraft.slots[message.slot] = { name: message.name, url: message.url };
+      templateImportDialog();
     }
   } else if (message.type === 'fonts') {
     setFonts(message.fonts || [], message.importedId);
