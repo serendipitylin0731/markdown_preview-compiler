@@ -83,6 +83,66 @@ test('visual editing changes only the selected Markdown block', async () => {
   await page.close();
 });
 
+test('IME composition and new paragraphs sync without phonetic text or duplicate lines', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  let source = '开头\n\n## 使用\n';
+  let version = 1;
+  let editCount = 0;
+  await deliver(page, { type: 'document', source, version, settings: {}, exportSettings: {}, templates: [] });
+  const paragraph = page.locator('#documentBody .md-block').first().locator('p');
+  await paragraph.click();
+  await page.keyboard.press('End');
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => {
+    const child = document.querySelector('#documentBody .md-block .block-content').lastElementChild;
+    child.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+    child.textContent = "wei'shen";
+    child.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data: "wei'shen", isComposing: true }));
+  });
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').length), 0);
+  await page.keyboard.press('Control+s');
+  assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'saveDocument').length), 0);
+  await page.evaluate(() => {
+    const child = document.querySelector('#documentBody .md-block .block-content').lastElementChild;
+    child.textContent = '为什么';
+    child.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '为什么' }));
+    child.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '为什么' }));
+  });
+  const sync = async expected => {
+    await page.waitForFunction(count => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').length > count, editCount, { timeout: 5000 });
+    const edit = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').at(-1));
+    editCount++;
+    source = source.slice(0, edit.start) + edit.replacement + source.slice(edit.end);
+    assert.equal(source, expected);
+    version++;
+    await deliver(page, { type: 'documentChanged', source, version });
+    await deliver(page, { type: 'editAck', id: edit.id, source, version });
+  };
+  await sync('开头\n\n为什么\n\n## 使用\n');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'saveDocument'), { timeout: 5000 });
+  assert.equal(await page.locator('#documentBody .md-block').count(), 3);
+  await page.locator('#documentBody .md-block').nth(1).locator('p').click();
+  await page.keyboard.press('End');
+  await page.keyboard.type('呀');
+  await sync('开头\n\n为什么呀\n\n## 使用\n');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('新');
+  await sync('开头\n\n为什么呀\n\n新\n\n## 使用\n');
+  await page.keyboard.type('段');
+  await sync('开头\n\n为什么呀\n\n新段\n\n## 使用\n');
+  assert.equal(await page.locator('#documentBody .md-block').count(), 4);
+  await page.locator('#documentBody .md-block').nth(2).locator('p').selectText();
+  await page.keyboard.press('Backspace');
+  await sync('开头\n\n为什么呀\n\n## 使用\n');
+  await page.locator('#documentBody .md-block').nth(1).locator('p').selectText();
+  await page.keyboard.press('Backspace');
+  await sync('开头\n\n## 使用\n');
+  await page.close();
+});
+
 test('manual page break is present in generated export bytes', async () => {
   const page = await browser.newPage();
   const errors = []; page.on('pageerror', error => errors.push(error.message));

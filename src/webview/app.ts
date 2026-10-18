@@ -118,6 +118,7 @@ let blocks: Block[] = [];
 let pendingEdit: any = null;
 let editTimer: number | undefined;
 let scheduledBlock: HTMLElement | null = null;
+let composingBlock: HTMLElement | null = null;
 let saveQueued = false;
 let pdfTimer: number | undefined;
 let pdfBytes: Uint8Array | null = null;
@@ -290,6 +291,8 @@ function buildShell() {
   root.addEventListener('click', onClick);
   root.addEventListener('change', onChange);
   root.addEventListener('input', onInput);
+  root.addEventListener('compositionstart', onCompositionStart);
+  root.addEventListener('compositionend', onCompositionEnd);
   root.addEventListener('keydown', onKeydown);
   root.addEventListener('focusin', onFocus);
   root.addEventListener('dblclick', onDoubleClick);
@@ -373,6 +376,8 @@ function onInput(event: Event) {
   if (['set-coverSubtitle', 'set-coverAuthor', 'set-coverDateText'].includes(target.id)) updateCoverSheet();
   const block = target.closest('.md-block') as HTMLElement | null;
   if (block && target.closest('.block-content')) {
+    const input = event as InputEvent;
+    if (input.isComposing || input.inputType === 'insertCompositionText' || composingBlock === block) return;
     if (target.matches('.direct-inline-math')) {
       const wrapper = target.closest<HTMLElement>('.math-inline');
       if (wrapper) wrapper.dataset.tex = (target as HTMLInputElement).value;
@@ -381,9 +386,24 @@ function onInput(event: Event) {
       const preview = block.querySelector<HTMLElement>('.math-block');
       if (preview) preview.innerHTML = katex.renderToString((target as HTMLTextAreaElement).value, { displayMode: true, throwOnError: false, trust: false, output: 'html' });
     }
-    if (!target.matches('[data-direct]')) renderTypedMarkdown(block, event as InputEvent);
+    if (!target.matches('[data-direct]')) renderTypedMarkdown(block, input);
     scheduleBlockSave(block);
   }
+}
+function onCompositionStart(event: CompositionEvent) {
+  const block = (event.target as HTMLElement).closest('.md-block') as HTMLElement | null;
+  if (!block || !(event.target as HTMLElement).closest('.block-content')) return;
+  composingBlock = block;
+  window.clearTimeout(editTimer);
+  editTimer = undefined;
+  scheduledBlock = block;
+}
+function onCompositionEnd(event: CompositionEvent) {
+  const block = (event.target as HTMLElement).closest('.md-block') as HTMLElement | null;
+  if (block !== composingBlock) return;
+  composingBlock = null;
+  // The final input event can follow compositionend, so let it update the DOM first.
+  window.setTimeout(() => { if (block.isConnected && composingBlock !== block) scheduleBlockSave(block); }, 0);
 }
 function renderTypedMarkdown(block: HTMLElement, event: InputEvent) {
   if (event.isComposing || ![' ', '*', '_', '~', '`', '$', '\n', ')', ']'].includes(event.data || '') && event.inputType !== 'insertParagraph') return;
@@ -545,6 +565,7 @@ function serializeBlock(element: HTMLElement, original: Block) {
   return markdown + (original.raw.endsWith('\n') ? '\n' : '');
 }
 function saveBlock(element: HTMLElement) {
+  if (composingBlock === element) { scheduledBlock = element; return; }
   if (pendingEdit) { scheduledBlock = element; editTimer = window.setTimeout(() => saveBlock(element), 80); return; }
   editTimer = undefined;
   if (scheduledBlock === element) scheduledBlock = null;
@@ -558,14 +579,14 @@ function saveBlock(element: HTMLElement) {
     return;
   }
   const replacement = serializeBlock(element, original);
-  if (replacement === original.raw) return;
+  if (replacement === original.raw) { if (saveQueued) flushQueuedSave(); return; }
   pendingEdit = { id: ++editSerial, index, element, replacement, snapshot: element.innerHTML,
     nextSource: source.slice(0, original.start) + replacement + source.slice(original.end) };
   submitEdit(original.start, original.end, original.raw, replacement, pendingEdit.id);
   toast('正在同步 Markdown…');
 }
 function flushQueuedSave() {
-  if (!saveQueued || pendingEdit || ownEdits.size) return;
+  if (!saveQueued || pendingEdit || ownEdits.size || composingBlock) return;
   if (scheduledBlock) {
     window.clearTimeout(editTimer); editTimer = undefined;
     const block = scheduledBlock;
@@ -629,14 +650,25 @@ function applySource(newSource: string, newVersion: number, own = false) {
   if (own && pendingEdit?.element?.isConnected) {
     const nextBlocks = parseBlocks(source);
     const current = pendingEdit.element;
-    const fresh = nextBlocks.find(block => block.start === blocks[pendingEdit.index]?.start);
-    if (fresh) {
+    const index = pendingEdit.index;
+    const fresh = nextBlocks[index];
+    if (nextBlocks.length === blocks.length && fresh?.start === blocks[index]?.start) {
       blocks = nextBlocks;
-      current.dataset.line = String(fresh.line);
+      document.querySelectorAll<HTMLElement>('#documentBody .md-block').forEach((element, i) => {
+        if (blocks[i]) element.dataset.line = String(blocks[i].line);
+      });
       pendingEdit = null;
       if (mode === 'visual' && visualPdf && autoUpdate) schedulePdf();
       return;
     }
+    const caret = captureBlockCaret(current);
+    window.clearTimeout(editTimer); editTimer = undefined;
+    if (scheduledBlock === current) scheduledBlock = null;
+    pendingEdit = null;
+    renderDocument();
+    restoreBlockCaret(caret, index);
+    if ((mode === 'pdf' || visualPdf) && autoUpdate) schedulePdf();
+    return;
   }
   if (document.activeElement?.closest?.('.md-block') && pendingEdit) {
     window.setTimeout(() => applySource(newSource, newVersion), 300);
@@ -645,6 +677,42 @@ function applySource(newSource: string, newVersion: number, own = false) {
   pendingEdit = null;
   renderDocument();
   if ((mode === 'pdf' || visualPdf) && autoUpdate) schedulePdf();
+}
+function captureBlockCaret(block: HTMLElement) {
+  const selection = window.getSelection();
+  const content = block.querySelector<HTMLElement>('.block-content');
+  if (!content || !selection?.rangeCount || !content.contains(selection.anchorNode)) return null;
+  const range = selection.getRangeAt(0);
+  let child: Node | null = range.startContainer;
+  while (child?.parentNode !== content) child = child?.parentNode || null;
+  if (!child) return null;
+  const offset = document.createRange();
+  offset.selectNodeContents(child);
+  offset.setEnd(range.startContainer, range.startOffset);
+  return { childIndex: [...content.childNodes].indexOf(child), textOffset: offset.toString().length };
+}
+function restoreBlockCaret(caret: { childIndex: number; textOffset: number } | null, index: number) {
+  if (!caret) return;
+  const block = document.querySelectorAll<HTMLElement>('#documentBody .md-block')[index + caret.childIndex];
+  const content = block?.querySelector<HTMLElement>('.block-content');
+  if (!content) return;
+  content.focus();
+  const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  let remaining = caret.textOffset;
+  while ((node = walker.nextNode())) {
+    const length = node.textContent?.length || 0;
+    if (remaining <= length) {
+      const range = document.createRange();
+      range.setStart(node, remaining); range.collapse(true);
+      window.getSelection()?.removeAllRanges(); window.getSelection()?.addRange(range);
+      return;
+    }
+    remaining -= length;
+  }
+  const range = document.createRange();
+  range.selectNodeContents(content); range.collapse(false);
+  window.getSelection()?.removeAllRanges(); window.getSelection()?.addRange(range);
 }
 function insertMarkdown(text: string) {
   const block = blocks[activeBlock];
