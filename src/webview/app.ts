@@ -474,11 +474,17 @@ function onKeydown(event: KeyboardEvent) {
       event.preventDefault(); document.execCommand(event.shiftKey ? 'outdent' : 'indent'); scheduleBlockSave(block);
     }
   }
-  if (event.key === 'Backspace' && mode === 'visual' && !event.isComposing) {
+  if ((event.key === 'Backspace' || event.key === 'Delete') && mode === 'visual' && !event.isComposing) {
     const block = selectedBlockElement();
     const content = block?.querySelector<HTMLElement>('.block-content');
     const selection = window.getSelection();
     if (!content || !selection?.isCollapsed || block?.classList.contains('direct-editor')) return;
+    if (!content.textContent?.trim() && !content.querySelector('img, table, input, code, pre, svg, iframe')) {
+      event.preventDefault();
+      removeBlock(block!);
+      return;
+    }
+    if (event.key !== 'Backspace') return;
     if (content.children.length > 1 || (content.children.length === 1 && !/^(P|H[1-6])$/.test(content.firstElementChild?.tagName || ''))) return;
     const range = selection.getRangeAt(0).cloneRange();
     const before = range.cloneRange(); before.selectNodeContents(content); before.setEnd(range.startContainer, range.startOffset);
@@ -493,6 +499,21 @@ function onKeydown(event: KeyboardEvent) {
     const end = empty ? current.end : current.start;
     submitEdit(start, end, source.slice(start, end), '');
   }
+}
+function removeBlock(element: HTMLElement) {
+  if (pendingEdit || !source) return;
+  window.clearTimeout(editTimer); editTimer = undefined;
+  if (scheduledBlock === element) scheduledBlock = null;
+  const index = Number(element.dataset.index);
+  const current = blocks[index];
+  if (!current?.editable) return;
+  const start = index ? blocks[index - 1].end : 0;
+  const end = index ? current.end : blocks[index + 1]?.start ?? source.length;
+  const id = ++editSerial;
+  pendingEdit = { id, index, element, replacement: '', remove: true,
+    nextSource: source.slice(0, start) + source.slice(end) };
+  submitEdit(start, end, source.slice(start, end), '', id);
+  toast('正在删除 Markdown 段落…');
 }
 function scheduleBlockSave(element: HTMLElement) {
   window.clearTimeout(editTimer);
@@ -531,9 +552,15 @@ function saveBlock(element: HTMLElement) {
   const index = Number(element.dataset.index);
   const original = blocks[index];
   if (!original || !original.editable) return;
+  const content = element.querySelector<HTMLElement>('.block-content');
+  if (content && !content.textContent?.trim() && !content.querySelector('img, table, input, code, pre, svg, iframe')) {
+    removeBlock(element);
+    return;
+  }
   const replacement = serializeBlock(element, original);
   if (replacement === original.raw) return;
-  pendingEdit = { id: ++editSerial, index, element, replacement, snapshot: element.innerHTML };
+  pendingEdit = { id: ++editSerial, index, element, replacement, snapshot: element.innerHTML,
+    nextSource: source.slice(0, original.start) + replacement + source.slice(original.end) };
   submitEdit(original.start, original.end, original.raw, replacement, pendingEdit.id);
   toast('正在同步 Markdown…');
 }
@@ -598,6 +625,7 @@ function applySource(newSource: string, newVersion: number, own = false) {
   if (newSource === source) { version = newVersion; return; }
   rebaseTemplateRanges(source, newSource);
   source = newSource; version = newVersion; pdfDirty = true;
+  if (own && pendingEdit?.remove) pendingEdit = null;
   if (own && pendingEdit?.element?.isConnected) {
     const nextBlocks = parseBlocks(source);
     const current = pendingEdit.element;
@@ -1610,7 +1638,7 @@ window.addEventListener('message', (event: MessageEvent) => {
     source = message.source; version = message.version; pdfDirty = true; renderDocument(false);
     if (mode === 'pdf' || autoExport) schedulePdf(true);
   } else if (message.type === 'documentChanged') {
-    if (pendingEdit && message.source.includes(pendingEdit.replacement)) {
+    if (pendingEdit && message.source === pendingEdit.nextSource) {
       applySource(message.source, message.version, true);
     } else applySource(message.source, message.version);
   } else if (message.type === 'editAck') {

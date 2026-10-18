@@ -776,20 +776,33 @@ test('a chosen template loads on the selected preview block range', async () => 
   await page.close();
 });
 
-test('Backspace removes a paragraph after its last text is deleted', async () => {
-  const page = await browser.newPage();
-  await page.goto(base + '/?mode=visual');
-  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
-  const source = '第一段。\n\n第二段。\n';
-  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
-  await page.locator('#documentBody p').nth(1).selectText();
-  await page.keyboard.press('Backspace');
-  await page.keyboard.press('Backspace');
-  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
-  const edit = await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'edit'));
-  assert.equal(edit.replacement, '');
-  assert.equal(source.slice(0, edit.start) + source.slice(edit.end), '第一段。\n');
-  await page.close();
+test('deleting all visible text removes its Markdown block, including the first character', async () => {
+  for (const scenario of [
+    { source: '第一段。\n\n第二段。\n', selector: '#documentBody p', index: 0, expected: '第二段。\n' },
+    { source: '第一段。\n\n第二段。\n\n第三段。\n', selector: '#documentBody p', index: 1, expected: '第一段。\n\n第三段。\n' },
+    { source: '第一段。\n\n第二段。\n', selector: '#documentBody p', index: 1, expected: '第一段。\n' },
+    { source: '# 标题\n', selector: '#documentBody h1', index: 0, expected: '' },
+    { source: '甲\n', selector: '#documentBody p', index: 0, expected: '', caret: 'end' },
+    { source: '乙\n', selector: '#documentBody p', index: 0, expected: '', caret: 'start', key: 'Delete' }
+  ]) {
+    const page = await browser.newPage();
+    await page.goto(base + '/?mode=visual');
+    await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+    await deliver(page, { type: 'document', source: scenario.source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+    const line = page.locator(scenario.selector).nth(scenario.index);
+    if (scenario.caret) { await line.click(); await page.keyboard.press(scenario.caret === 'end' ? 'End' : 'Home'); }
+    else await line.selectText();
+    await page.keyboard.press(scenario.key || 'Backspace');
+    await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
+    const edit = await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'edit'));
+    const next = scenario.source.slice(0, edit.start) + edit.replacement + scenario.source.slice(edit.end);
+    assert.equal(next, scenario.expected, `failed to remove ${JSON.stringify(scenario.source)}`);
+    await deliver(page, { type: 'documentChanged', source: next, version: 2 });
+    await deliver(page, { type: 'editAck', id: edit.id, source: next, version: 2 });
+    assert.equal((await page.locator('#documentBody').textContent()).replace(/\s+/g, ''),
+      scenario.expected.replace(/\s+/g, ''));
+    await page.close();
+  }
 });
 
 test('inline code and math buttons format the selected text', async () => {
