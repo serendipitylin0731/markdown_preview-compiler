@@ -131,6 +131,10 @@ let pdfScale = 1;
 let pdfBusy = false;
 let pdfQueued = false;
 let pdfDirty = true;
+const imageSession = Date.now().toString(36) + Math.random().toString(36).slice(2);
+let imageRequestSerial = 0;
+const pendingImageRequests = new Map<string, { resolve: (data: string) => void; reject: (error: Error) => void; timer: number }>();
+const imageDataCache = new Map<string, Promise<string>>();
 let autoExport = false;
 let visualPdf = false;
 let autoUpdate = true;
@@ -209,18 +213,43 @@ function parseBlocks(input: string): Block[] {
     html: '<p><br></p>', editable: true, line: 0 });
   return result;
 }
-function localizeImages(container: HTMLElement) {
-  container.querySelectorAll('img').forEach((img: HTMLImageElement) => {
-    const raw = img.getAttribute('src') || '';
-    if (!/^(data:|https?:|vscode-|blob:)/i.test(raw)) {
-      try {
-        img.dataset.originalSrc = raw;
-        img.src = new URL(raw, boot.directory.endsWith('/') ? boot.directory : boot.directory + '/').toString();
-      }
-      catch { img.alt = `图片路径无效：${raw}`; }
-    }
-    img.onerror = () => { img.classList.add('missing-image'); img.dataset.renderError = `图片无法加载：${raw}`; toast(img.dataset.renderError, true); };
+function resolvedImage(raw: string): Promise<string> {
+  const cached = imageDataCache.get(raw);
+  if (cached) return cached;
+  const request = new Promise<string>((resolve, reject) => {
+    const id = `${imageSession}-${++imageRequestSerial}`;
+    const timer = window.setTimeout(() => {
+      pendingImageRequests.delete(id);
+      reject(new Error('图片读取超时'));
+    }, 20000);
+    pendingImageRequests.set(id, { resolve, reject, timer });
+    post('resolveImage', { id, source: raw });
   });
+  imageDataCache.set(raw, request);
+  void request.catch(() => { if (imageDataCache.get(raw) === request) imageDataCache.delete(raw); });
+  return request;
+}
+async function localizeImages(container: HTMLElement) {
+  const images = container.matches('img') ? [container as HTMLImageElement] : [...container.querySelectorAll<HTMLImageElement>('img')];
+  await Promise.all(images.map(async img => {
+    const raw = img.dataset.originalSrc || img.getAttribute('src') || '';
+    if (!raw) return;
+    if (!/^(data:|blob:|vscode-)/i.test(raw)) img.dataset.originalSrc = raw;
+    try {
+      const data = /^(data:|blob:|vscode-)/i.test(raw) ? raw : await resolvedImage(raw);
+      if (!img.isConnected) return;
+      img.src = data;
+      await img.decode();
+      img.classList.remove('missing-image');
+      delete img.dataset.renderError;
+    } catch (error) {
+      if (!img.isConnected) return;
+      img.removeAttribute('src');
+      img.classList.add('missing-image');
+      img.dataset.renderError = `图片无法加载：${raw}（${error instanceof Error ? error.message : error}）`;
+      toast(img.dataset.renderError, true);
+    }
+  }));
 }
 async function renderMermaid(container: HTMLElement) {
   for (const element of container.querySelectorAll<HTMLElement>('.mermaid-source')) {
@@ -323,7 +352,7 @@ function renderDocument(preserve = true) {
   const body = document.getElementById('documentBody')!;
   body.innerHTML = blocks.map((block, i) => blockMarkup(block, i, mode === 'visual')).join('') || '<div class="empty">开始编写 Markdown…</div>';
   if (mode === 'visual') body.querySelectorAll<HTMLInputElement>('input[type=checkbox]').forEach(input => input.disabled = false);
-  localizeImages(body);
+  void localizeImages(body);
   void renderMermaid(body);
   if (pane) pane.scrollTop = previous;
   if (mode === 'preview' && lastScrollLine && settings.syncScroll) scrollToLine(lastScrollLine);
@@ -1099,7 +1128,7 @@ function onClick(event: MouseEvent) {
     closeDialog(); return;
   }
   if (action === 'editSource') return editProtected(Number(button.closest('.md-block')?.getAttribute('data-index')));
-  if (action === 'refresh') return schedulePdf(true);
+  if (action === 'refresh') { imageDataCache.clear(); return schedulePdf(true); }
   if (action === 'export') return exportPdf();
   if (action === 'prev') return jumpPage(pdfPage - 1);
   if (action === 'next') return jumpPage(pdfPage + 1);
@@ -1178,9 +1207,8 @@ function onClick(event: MouseEvent) {
         image.alt = (document.getElementById('imageAlt') as HTMLInputElement).value;
         image.dataset.originalSrc = url;
         image.classList.remove('missing-image');
-        image.onerror = () => { image.classList.add('missing-image'); image.dataset.renderError = `图片无法加载：${url}`; toast(image.dataset.renderError, true); };
-        image.src = /^(data:|https?:|vscode-|blob:)/i.test(url) ? url :
-          new URL(url, boot.directory.endsWith('/') ? boot.directory : boot.directory + '/').toString();
+        image.removeAttribute('src');
+        void localizeImages(image);
       }
       scheduleBlockSave(block);
     }
@@ -1334,7 +1362,6 @@ function makePrintBlock(block: Block): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'print-block';
   wrapper.innerHTML = block.html;
-  localizeImages(wrapper);
   applyChinesePrintFont(wrapper);
   return wrapper;
 }
@@ -1417,6 +1444,7 @@ async function paginate() {
     }
     const element = makePrintBlock(block);
     content.append(element);
+    await localizeImages(element);
     await waitImages(element);
     await renderMermaid(element);
     if (content.scrollHeight <= contentHeight() + 2) continue;
@@ -1622,8 +1650,10 @@ async function generatePdf() {
     pdfPreviewImages = previewImages;
     pdfPreviewSize = [width, height];
     await renderPdfPages();
-    if (status) status.textContent = `PDF 已更新 · ${pages.length} 页`;
-    toast(`PDF 已更新 · ${pages.length} 页`);
+    const missingImages = document.querySelectorAll('#printHost .print-content img.missing-image').length;
+    const message = `PDF 已更新 · ${pages.length} 页${missingImages ? ` · ${missingImages} 张图片加载失败` : ''}`;
+    if (status) status.textContent = message;
+    toast(message, !!missingImages);
     if (autoExport) { autoExport = false; sendPdfBytes(); }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -1730,7 +1760,14 @@ function setFonts(items: any[], importedId?: string) {
 }
 window.addEventListener('message', (event: MessageEvent) => {
   const message = event.data;
-  if (message.type === 'document') {
+  if (message.type === 'imageResolved') {
+    const request = pendingImageRequests.get(message.id);
+    if (!request) return;
+    pendingImageRequests.delete(message.id);
+    window.clearTimeout(request.timer);
+    if (message.error) request.reject(new Error(message.error));
+    else request.resolve(message.data);
+  } else if (message.type === 'document') {
     settings = message.settings || {}; exportSettings = { ...exportSettings, ...(message.exportSettings || {}) };
     if (exportSettings.fontFamily === 'Arial, sans-serif') exportSettings.fontFamily = '';
     if (exportSettings.titleFontFamily === 'Georgia, serif') exportSettings.titleFontFamily = '';

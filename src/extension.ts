@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import { imageDataUrl } from './image-source';
 
 type Mode = 'preview' | 'visual' | 'pdf';
 type Panel = { panel: vscode.WebviewPanel; uri: vscode.Uri; mode: Mode; autoExport?: boolean };
@@ -162,6 +163,19 @@ async function handleMessage(state: Panel, message: any) {
         exportSettings: { ...extensionContext.globalState.get('exportSettings', {}), ...scoped }, templates: templatesFor(state), fonts: fontsFor(state),
         autoExport: state.autoExport });
       state.autoExport = false;
+    } else if (message.type === 'resolveImage') {
+      const id = String(message.id || '');
+      if (!/^[a-z0-9]+-\d+$/.test(id)) return;
+      try {
+        const data = await imageDataUrl(String(message.source || ''), async source => {
+          const target = /^file:/i.test(source) ? vscode.Uri.parse(source) :
+            vscode.Uri.joinPath(document.uri, '..', decodeURIComponent(source.split(/[?#]/, 1)[0]));
+          return vscode.workspace.fs.readFile(target);
+        });
+        post(state, { type: 'imageResolved', id, data });
+      } catch (error) {
+        post(state, { type: 'imageResolved', id, error: error instanceof Error ? error.message : String(error) });
+      }
     } else if (message.type === 'edit') {
       const { start, end, expected, replacement } = message;
       if (![start, end].every(Number.isInteger) || start < 0 || end < start || end > document.getText().length ||

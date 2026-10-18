@@ -242,6 +242,41 @@ test('PDF lays out consecutive Chinese characters in one Songti font run', async
   await page.close();
 });
 
+test('PDF embeds both relative and web images supplied by the extension host', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = '![本地](./assets/logo.png)\n\n![网页](https://example.invalid/logo.png)\n';
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage').length === 2, { timeout: 5000 });
+  const requests = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage'));
+  assert.deepEqual(requests.map(request => request.source).sort(), ['./assets/logo.png', 'https://example.invalid/logo.png']);
+  const data = `data:image/png;base64,${fs.readFileSync(path.resolve(__dirname, '..', 'assets/logo.png')).toString('base64')}`;
+  for (const request of requests) await deliver(page, { type: 'imageResolved', id: request.id, data });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const images = await page.evaluate(() => {
+    const paper = document.querySelector('#printHost .print-page');
+    const canvas = document.querySelector('#pdfPages canvas');
+    const context = canvas.getContext('2d');
+    return [...paper.querySelectorAll('.print-content img')].map(img => {
+      const rect = img.getBoundingClientRect(), pageRect = paper.getBoundingClientRect();
+      const x = Math.floor((rect.left - pageRect.left) * canvas.width / pageRect.width);
+      const y = Math.floor((rect.top - pageRect.top) * canvas.height / pageRect.height);
+      const width = Math.max(1, Math.floor(rect.width * canvas.width / pageRect.width));
+      const height = Math.max(1, Math.floor(rect.height * canvas.height / pageRect.height));
+      const pixels = context.getImageData(x, y, width, height).data;
+      let ink = 0;
+      for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 150 && pixels[i + 1] < 150 && pixels[i + 2] < 150) ink++;
+      return { alt: img.alt, source: img.dataset.originalSrc, loaded: img.complete && img.naturalWidth === 256,
+        dataUrl: img.src.startsWith('data:image/png;base64,'), ink };
+    });
+  });
+  assert.equal(images.length, 2);
+  assert.ok(images.every(image => image.loaded && image.dataUrl && image.ink > 200), JSON.stringify(images));
+  assert.deepEqual(images.map(image => image.source), ['./assets/logo.png', 'https://example.invalid/logo.png']);
+  await page.close();
+});
+
 test('README PDF preview and export keep print colors, margins, and footer without linked CSS', async () => {
   const page = await browser.newPage({ viewport: { width: 1280, height: 1250 } });
   await page.goto(base + '/?mode=pdf');
