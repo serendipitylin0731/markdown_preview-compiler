@@ -2,9 +2,9 @@
   "name": "markdown-preview-compiler",
   "displayName": "Markdown Preview & Compiler",
   "description": "Markdown source, visual editing, live PDF preview and export.",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "icon": "assets/logo.png",
-  "publisher": "serendpity-lin",
+  "publisher": "serendipity-lin",
   "repository": {
     "type": "git",
     "url": "https://github.com/serendipitylin0731/markdown_preview-compiler.git"

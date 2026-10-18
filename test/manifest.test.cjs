@@ -7,6 +7,10 @@ const crypto = require('node:crypto');
 const root = path.resolve(__dirname, '..');
 const manifest = require(path.join(root, 'package.json'));
 
+test('VSIX publisher matches the release identity', () => {
+  assert.equal(manifest.publisher, 'serendipity-lin');
+});
+
 test('Markdown editor title has one icon that opens split preview without reserved shortcuts', () => {
   assert.deepEqual(manifest.contributes.menus['editor/title'].map(item => item.command), ['markdownCompiler.split']);
   assert.equal(manifest.contributes.menus['editor/title'][0].when, 'resourceLangId == markdown');
