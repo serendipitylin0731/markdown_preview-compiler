@@ -351,6 +351,7 @@ function renderDocument(preserve = true) {
   blocks = parseBlocks(source);
   const body = document.getElementById('documentBody')!;
   body.innerHTML = blocks.map((block, i) => blockMarkup(block, i, mode === 'visual')).join('') || '<div class="empty">开始编写 Markdown…</div>';
+  body.querySelectorAll<HTMLElement>('.math-inline').forEach(math => math.contentEditable = 'false');
   if (mode === 'visual') body.querySelectorAll<HTMLInputElement>('input[type=checkbox]').forEach(input => input.disabled = false);
   void localizeImages(body);
   void renderMermaid(body);
@@ -449,6 +450,7 @@ function renderTypedMarkdown(block: HTMLElement, event: InputEvent) {
   const rendered = DOMPurify.sanitize(md.render(raw));
   if (!rendered || rendered === content.innerHTML) return;
   content.innerHTML = rendered;
+  content.querySelectorAll<HTMLElement>('.math-inline').forEach(math => math.contentEditable = 'false');
   const selection = window.getSelection();
   const range = document.createRange();
   const caretTarget = content.querySelector('li:last-child, h1:last-child, h2:last-child, h3:last-child, h4:last-child, h5:last-child, h6:last-child, p:last-child') || content.lastElementChild || content;
@@ -533,20 +535,41 @@ function onKeydown(event: KeyboardEvent) {
       removeBlock(block!);
       return;
     }
-    if (event.key !== 'Backspace') return;
     if (content.children.length > 1 || (content.children.length === 1 && !/^(P|H[1-6])$/.test(content.firstElementChild?.tagName || ''))) return;
     const range = selection.getRangeAt(0).cloneRange();
+    const index = Number(block?.dataset.index);
+    if (event.key === 'Delete') {
+      const after = range.cloneRange(); after.selectNodeContents(content); after.setStart(range.startContainer, range.startOffset);
+      if (after.toString().trim().length) return;
+      const current = blocks[index], next = blocks[index + 1];
+      if (!current || !next) return;
+      const currentBreak = current.raw.endsWith('\r\n') ? 2 : current.raw.endsWith('\n') ? 1 : 0;
+      const start = Math.max(current.start, current.end - currentBreak), end = next.start;
+      if (start === end) return;
+      event.preventDefault();
+      window.clearTimeout(editTimer); editTimer = undefined;
+      const id = ++editSerial;
+      pendingEdit = { id, index, element: block, nextSource: source.slice(0, start) + source.slice(end),
+        focusIndex: index, focusTextOffset: content.textContent?.trimEnd().length || 0 };
+      submitEdit(start, end, source.slice(start, end), '', id);
+      return;
+    }
     const before = range.cloneRange(); before.selectNodeContents(content); before.setEnd(range.startContainer, range.startOffset);
     if (before.toString().length) return;
-    const index = Number(block?.dataset.index);
     const current = blocks[index], previous = blocks[index - 1];
     if (!current || !previous) return;
     event.preventDefault();
     window.clearTimeout(editTimer); editTimer = undefined;
     const empty = !content.textContent?.trim();
-    const start = empty ? previous.end : Math.max(previous.start, previous.end - 1);
+    const previousBreak = previous.raw.endsWith('\r\n') ? 2 : previous.raw.endsWith('\n') ? 1 : 0;
+    const start = empty ? previous.end : Math.max(previous.start, previous.end - previousBreak);
     const end = empty ? current.end : current.start;
-    submitEdit(start, end, source.slice(start, end), '');
+    const expected = source.slice(start, end);
+    const id = ++editSerial;
+    const previousContent = document.querySelectorAll<HTMLElement>('#documentBody .md-block')[index - 1]?.querySelector('.block-content');
+    pendingEdit = { id, index, element: block, nextSource: source.slice(0, start) + source.slice(end),
+      focusIndex: index - 1, focusTextOffset: previousContent?.textContent?.trimEnd().length || 0 };
+    submitEdit(start, end, expected, '', id);
   }
 }
 function removeBlock(element: HTMLElement) {
@@ -559,7 +582,9 @@ function removeBlock(element: HTMLElement) {
   const start = index ? blocks[index - 1].end : 0;
   const end = index ? current.end : blocks[index + 1]?.start ?? source.length;
   const id = ++editSerial;
+  const previousContent = document.querySelectorAll<HTMLElement>('#documentBody .md-block')[index - 1]?.querySelector('.block-content');
   pendingEdit = { id, index, element, replacement: '', remove: true,
+    focusIndex: Math.max(0, index - 1), focusTextOffset: previousContent?.textContent?.trimEnd().length || 0,
     nextSource: source.slice(0, start) + source.slice(end) };
   submitEdit(start, end, source.slice(start, end), '', id);
   toast('正在删除 Markdown 段落…');
@@ -569,13 +594,52 @@ function scheduleBlockSave(element: HTMLElement) {
   scheduledBlock = element;
   editTimer = window.setTimeout(() => saveBlock(element), 120);
 }
+function serializeList(list: HTMLElement, bullet = '-'): string {
+  const ordered = list instanceof HTMLOListElement;
+  return [...list.children].filter(child => child.tagName === 'LI').map((item, index) => {
+    const copy = item.cloneNode(true) as HTMLElement;
+    const nested = [...copy.children].filter(child => child.matches('ul, ol')) as HTMLElement[];
+    nested.forEach(child => child.remove());
+    const checkbox = copy.querySelector<HTMLInputElement>('input[type=checkbox]');
+    const checked = checkbox ? (checkbox.checked ? '[x] ' : '[ ] ') : '';
+    checkbox?.remove();
+    const body = turndown.turndown(copy.innerHTML).trim();
+    const marker = ordered ? `${(list as HTMLOListElement).start + index}.` : bullet;
+    const indent = ' '.repeat(marker.length + 1);
+    const line = marker + (body || checked ? ` ${checked}${body.replace(/\n/g, `\n${indent}`)}` : '');
+    return [line, ...nested.map(child => serializeList(child, bullet).split('\n').map(line => indent + line).join('\n'))].join('\n');
+  }).join('\n');
+}
+function preserveTableAlignment(markdown: string, table: HTMLTableElement): string {
+  const lines = markdown.split('\n');
+  const divider = lines.findIndex((line, index) => index > 0 && /^\s*\|?[\s:|\-]+\|?\s*$/.test(line) && line.includes('---'));
+  if (divider < 0) return markdown;
+  const headers = [...table.querySelectorAll<HTMLTableCellElement>('thead th')];
+  if (!headers.length) return markdown;
+  const markers = headers.map(header => {
+    const align = header.style.textAlign || header.getAttribute('align') || '';
+    return align === 'center' ? ':---:' : align === 'right' ? '---:' : align === 'left' ? ':---' : '---';
+  });
+  lines[divider] = `| ${markers.join(' | ')} |`;
+  return lines.join('\n');
+}
 function serializeBlock(element: HTMLElement, original: Block) {
+  const eol = original.raw.includes('\r\n') ? '\r\n' : '\n';
+  const finish = (text: string) => {
+    const normalized = text.replace(/\r?\n/g, eol);
+    const trailing = (value: string) => value.match(/(?:\r?\n)+$/)?.[0].match(/\n/g)?.length || 0;
+    return normalized + eol.repeat(Math.max(0, trailing(original.raw) - trailing(normalized)));
+  };
   if (original.kind === 'code') {
-    const opener = original.raw.match(/^\s*(`{3,}|~{3,})[^\n]*/)?.[0] || '```text';
+    const opener = original.raw.split(/\r?\n/, 1)[0] || '```text';
     const fence = opener.trimStart().match(/^(`{3,}|~{3,})/)?.[0] || '```';
-    return `${opener}\n${element.querySelector('[data-direct="code"]')?.textContent || ''}\n${fence}${original.raw.endsWith('\n') ? '\n' : ''}`;
+    const body = (element.querySelector('[data-direct="code"]')?.textContent || '').replace(/\r?\n/g, eol);
+    return finish(`${opener}${eol}${body}${eol}${fence}`);
   }
-  if (original.kind === 'math') return `$$\n${(element.querySelector('[data-direct="math"]') as HTMLTextAreaElement)?.value || ''}\n$$${original.raw.endsWith('\n') ? '\n' : ''}`;
+  if (original.kind === 'math') {
+    const body = ((element.querySelector('[data-direct="math"]') as HTMLTextAreaElement)?.value || '').replace(/\r?\n/g, eol);
+    return finish(`$$${eol}${body}${eol}$$`);
+  }
   const copy = element.querySelector<HTMLElement>('.block-content')!.cloneNode(true) as HTMLElement;
   copy.querySelectorAll<HTMLImageElement>('img[data-original-src]').forEach(img => {
     img.setAttribute('src', img.dataset.originalSrc || '');
@@ -585,13 +649,20 @@ function serializeBlock(element: HTMLElement, original: Block) {
     const li = checkbox.closest('li');
     if (li) li.dataset.checked = checkbox.checked ? 'true' : 'false';
   });
-  let markdown = turndown.turndown(copy.innerHTML).trimEnd();
+  const children = [...copy.children];
+  const list = children.length === 1 && children[0].matches('ul, ol') ? children[0] as HTMLElement : null;
+  const bullet = original.raw.match(/^\s*([*+-])\s/)?.[1] || '-';
+  let markdown = list ? serializeList(list, bullet) : children.length > 1 && children.every(child => child.matches('p, div, h1, h2, h3, h4, h5, h6'))
+    ? children.map(child => child.textContent?.trim() ? turndown.turndown(child.outerHTML).trimEnd() : '').join('\n\n')
+    : turndown.turndown(copy.innerHTML).trimEnd();
   if (/^\s*[-*+] \[[ xX]\]/m.test(original.raw)) {
     const checked = [...element.querySelectorAll<HTMLInputElement>('input[type=checkbox]')];
     let i = 0;
     markdown = markdown.replace(/^(\s*[-*+]\s+)\[[ xX]\]/gm, (_match, prefix) => `${prefix}[${checked[i++]?.checked ? 'x' : ' '}]`);
   }
-  return markdown + (original.raw.endsWith('\n') ? '\n' : '');
+  const table = copy.querySelector<HTMLTableElement>('table');
+  if (table) markdown = preserveTableAlignment(markdown, table);
+  return finish(markdown);
 }
 function saveBlock(element: HTMLElement) {
   if (composingBlock === element) { scheduledBlock = element; return; }
@@ -677,10 +748,13 @@ function applySource(newSource: string, newVersion: number, own = false) {
     window.setTimeout(() => applySource(newSource, newVersion), 300);
     return;
   }
-  if (newSource === source) { version = newVersion; return; }
+  if (newSource === source) {
+    version = newVersion;
+    if (own) pendingEdit = null;
+    return;
+  }
   rebaseTemplateRanges(source, newSource);
   source = newSource; version = newVersion; pdfDirty = true;
-  if (own && pendingEdit?.remove) pendingEdit = null;
   if (own && pendingEdit?.element?.isConnected) {
     const nextBlocks = parseBlocks(source);
     const current = pendingEdit.element;
@@ -695,12 +769,17 @@ function applySource(newSource: string, newVersion: number, own = false) {
       if (mode === 'visual' && visualPdf && autoUpdate) schedulePdf();
       return;
     }
-    const caret = captureBlockCaret(current);
+    const explicitCaret = pendingEdit.focusIndex !== undefined;
+    const focusIndex = pendingEdit.focusIndex;
+    const caret = explicitCaret ? { childIndex: 0, textOffset: pendingEdit.focusTextOffset } : captureBlockCaret(current);
     window.clearTimeout(editTimer); editTimer = undefined;
     if (scheduledBlock === current) scheduledBlock = null;
     pendingEdit = null;
+    const addedBlocks = nextBlocks.length - blocks.length;
+    const caretBlock = explicitCaret ? focusIndex :
+      addedBlocks > 0 ? index + Math.min(caret?.childIndex || 0, addedBlocks) : index;
     renderDocument();
-    restoreBlockCaret(caret, index);
+    restoreBlockCaret(caret, Math.min(caretBlock, blocks.length - 1));
     if ((mode === 'pdf' || visualPdf) && autoUpdate) schedulePdf();
     return;
   }
@@ -723,7 +802,7 @@ function captureBlockCaret(block: HTMLElement) {
 }
 function restoreBlockCaret(caret: { childIndex: number; textOffset: number } | null, index: number) {
   if (!caret) return;
-  const block = document.querySelectorAll<HTMLElement>('#documentBody .md-block')[index + caret.childIndex];
+  const block = document.querySelectorAll<HTMLElement>('#documentBody .md-block')[index];
   const content = block?.querySelector<HTMLElement>('.block-content');
   if (!content) return;
   content.focus();
@@ -734,7 +813,10 @@ function restoreBlockCaret(caret: { childIndex: number; textOffset: number } | n
     const length = node.textContent?.length || 0;
     if (remaining <= length) {
       const range = document.createRange();
-      range.setStart(node, remaining); range.collapse(true);
+      const nonEditable = node.parentElement?.closest('[contenteditable="false"]');
+      if (nonEditable && content.contains(nonEditable)) range.setStartAfter(nonEditable);
+      else range.setStart(node, remaining);
+      range.collapse(true);
       window.getSelection()?.removeAllRanges(); window.getSelection()?.addRange(range);
       return;
     }

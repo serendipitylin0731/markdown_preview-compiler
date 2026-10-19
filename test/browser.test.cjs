@@ -50,6 +50,161 @@ test.after(async () => { await browser?.close(); await new Promise(resolve => se
 function deliver(page, message) {
   return page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), message);
 }
+async function crlfVisualHarness(page, initialSource) {
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  let source = initialSource;
+  let version = 1, count = 0;
+  await deliver(page, { type: 'document', source, version, settings: {}, exportSettings: {}, templates: [] });
+  return {
+    source: () => source,
+    async sync() {
+      try {
+        await page.waitForFunction(n => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').length > n, count, { timeout: 5000 });
+      } catch (error) {
+        const state = await page.evaluate(() => ({ status: document.getElementById('status')?.textContent,
+          active: document.activeElement?.outerHTML.slice(0, 180), list: document.querySelector('#documentBody ul')?.outerHTML.slice(0, 500),
+          edits: window.__MDC_MESSAGES__.filter(m => m.type === 'edit').length }));
+        throw new Error(`Visual edit did not sync: ${JSON.stringify(state)}`, { cause: error });
+      }
+      const edit = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').at(-1));
+      count++;
+      assert.equal(source.slice(edit.start, edit.end), edit.expected);
+      source = source.slice(0, edit.start) + edit.replacement.replace(/\r?\n/g, '\r\n') + source.slice(edit.end);
+      version++;
+      await deliver(page, { type: 'documentChanged', source, version });
+      await deliver(page, { type: 'editAck', id: edit.id, source, version });
+      return edit;
+    }
+  };
+}
+async function placeParagraphCaret(page, prefix, offset) {
+  await page.evaluate(({ prefix, offset }) => {
+    const paragraph = [...document.querySelectorAll('#documentBody p')].find(p => p.textContent?.startsWith(prefix));
+    if (!paragraph?.firstChild) throw new Error(`Missing paragraph: ${prefix}`);
+    const range = document.createRange();
+    range.setStart(paragraph.firstChild, Math.min(offset, paragraph.firstChild.textContent.length));
+    range.collapse(true);
+    paragraph.closest('.block-content').focus();
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  }, { prefix, offset });
+}
+test('CRLF paragraph lines insert, merge, delete and retain the editing caret', async () => {
+  const page = await browser.newPage();
+  const host = await crlfVisualHarness(page, ['# 主标题', '', '## 背景', '', '甲乙丙丁。', '', '第二段。', '', '第三段。', ''].join('\r\n'));
+  await page.locator('#documentBody p').filter({ hasText: '甲乙丙丁' }).click();
+  await page.keyboard.press('End'); await page.keyboard.press('Enter'); await host.sync();
+  await page.keyboard.type('新行'); await host.sync();
+  await page.keyboard.type('续'); await host.sync();
+  assert.match(host.source(), /甲乙丙丁。\r\n\r\n新行续\r\n/);
+  await page.locator('#documentBody p').filter({ hasText: '新行续' }).selectText();
+  await page.keyboard.press('Backspace'); await host.sync();
+  assert.doesNotMatch(host.source(), /新行续/);
+  await page.keyboard.type('归'); await host.sync();
+  assert.match(host.source(), /甲乙丙丁。归/);
+  await page.keyboard.press('Backspace'); await host.sync();
+  await placeParagraphCaret(page, '甲乙丙丁', 2);
+  await page.keyboard.press('Enter'); await host.sync();
+  await page.keyboard.type('插'); await host.sync();
+  assert.match(host.source(), /甲乙\r\n\r\n插丙丁/);
+  await placeParagraphCaret(page, '插丙丁', 0);
+  await page.keyboard.press('Enter'); await host.sync();
+  await page.keyboard.type('首'); await host.sync();
+  assert.match(host.source(), /首插丙丁/);
+  await placeParagraphCaret(page, '首插丙丁', 0);
+  await page.keyboard.press('Backspace'); await host.sync();
+  await page.keyboard.type('合'); await host.sync();
+  assert.match(host.source(), /甲乙合首插丙丁/);
+  await page.locator('#documentBody p').filter({ hasText: '甲乙合首插丙丁' }).click();
+  await page.keyboard.press('End'); await page.keyboard.press('Delete'); await host.sync();
+  await page.keyboard.type('尾'); await host.sync();
+  assert.match(host.source(), /甲乙合首插丙丁。尾第二段。/);
+  await page.locator('#documentBody h2').first().click();
+  await page.keyboard.press('End'); await page.keyboard.press('Enter'); await host.sync();
+  await page.keyboard.type('副题'); await host.sync();
+  assert.match(host.source(), /## 背景\r\n\r\n副题\r\n/);
+  await page.locator('#documentBody p').filter({ hasText: '第三段' }).click();
+  await page.keyboard.press('End'); await page.keyboard.insertText('粘贴甲\n粘贴乙'); await host.sync();
+  assert.match(host.source(), /粘贴甲\r\n\r\n粘贴乙/);
+  await page.waitForTimeout(350);
+  assert.match(host.source(), /第三段/);
+  await page.close();
+});
+test('CRLF list, code and aligned table edits preserve adjacent content and undo history', async () => {
+  const page = await browser.newPage();
+  const source = ['# 文档', '', '- 首项含 $n$', '- 次项', '- 末项', '', '后续段落。', '',
+    '```text', 'A', 'B', '```', '', '| 甲 | 乙 |', '| :---: | ---: |', '| 1 | 2 |', '| 3 | 4 |', '', '末尾段落。', ''].join('\r\n');
+  const host = await crlfVisualHarness(page, source);
+  await page.locator('#documentBody li').first().click();
+  await page.keyboard.press('End'); await page.keyboard.press('Enter'); await host.sync();
+  await page.keyboard.type('新增项'); await host.sync();
+  assert.match(host.source(), /- 新增项\r\n- 次项/);
+  assert.match(host.source(), /\r\n\r\n后续段落。/);
+  await page.locator('#documentBody li').filter({ hasText: '新增项' }).selectText();
+  await page.keyboard.press('Backspace'); await host.sync();
+  await page.locator('#documentBody li').nth(1).click();
+  await page.keyboard.press('Backspace'); await host.sync();
+  assert.doesNotMatch(host.source(), /新增项|\r\n-\r\n/);
+  await page.locator('#documentBody [data-direct="code"]').click();
+  await page.keyboard.press('End'); await page.keyboard.press('Enter'); await page.keyboard.type('新代码'); await host.sync();
+  assert.match(host.source(), /```text[\s\S]*新代码[\s\S]*```\r\n\r\n\| 甲/);
+  await page.evaluate(() => {
+    const code = document.querySelector('#documentBody [data-direct="code"]');
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const offset = node.textContent.indexOf('新代码');
+      if (offset < 0) continue;
+      const range = document.createRange(); range.setStart(node, offset); range.setEnd(node, offset + 3);
+      code.focus(); window.getSelection().removeAllRanges(); window.getSelection().addRange(range); return;
+    }
+    throw new Error('Missing inserted code line');
+  });
+  await page.keyboard.press('Backspace'); await host.sync();
+  assert.doesNotMatch(host.source(), /新代码/);
+  const table = page.locator('#documentBody table').first();
+  const rowCount = await table.locator('tr').count();
+  await table.locator('td').first().click();
+  await page.locator('button[data-action=row]').click(); await host.sync();
+  assert.equal(await page.locator('#documentBody table tr').count(), rowCount + 1);
+  assert.match(host.source(), /\| :---: \| ---: \|/);
+  await page.keyboard.press('Control+z'); await host.sync();
+  assert.equal(await page.locator('#documentBody table tr').count(), rowCount);
+  await page.keyboard.press('Control+y'); await host.sync();
+  assert.equal(await page.locator('#documentBody table tr').count(), rowCount + 1);
+  await page.locator('#documentBody table td').first().click();
+  await page.locator('button[data-action=column]').click(); await host.sync();
+  assert.equal(await page.locator('#documentBody table th').count(), 3);
+  await page.locator('#documentBody table td').last().click();
+  await page.locator('button[data-action=deleteColumn]').click(); await host.sync();
+  assert.equal(await page.locator('#documentBody table th').count(), 2);
+  await page.locator('#documentBody table tbody tr').last().locator('td').first().click();
+  await page.locator('button[data-action=deleteRow]').click(); await host.sync();
+  assert.equal(await page.locator('#documentBody table tr').count(), rowCount);
+  assert.match(host.source(), /\| :---: \| ---: \|/);
+  assert.match(host.source(), /末尾段落。\r\n$/);
+  await page.close();
+});
+test('CRLF nested lists and task checks keep their markers when edited', async () => {
+  const page = await browser.newPage();
+  const source = ['3. 父项', '   - 子项甲', '   - 子项乙', '4. 第二项', '', '- [ ] 待办', ''].join('\r\n');
+  const host = await crlfVisualHarness(page, source);
+  await page.locator('#documentBody li').filter({ hasText: '子项甲' }).last().click();
+  await page.keyboard.press('End'); await page.keyboard.type('续'); await host.sync();
+  assert.match(host.source(), /3\. 父项\r\n   - 子项甲续\r\n   - 子项乙\r\n4\. 第二项/);
+  await page.locator('#documentBody input[type=checkbox]').check(); await host.sync();
+  assert.match(host.source(), /- \[x\] 待办/);
+  await page.close();
+});
+test('CRLF paragraph merge next to inline math keeps the formula intact', async () => {
+  const page = await browser.newPage();
+  const host = await crlfVisualHarness(page, '前文 $n$\r\n\r\n后文\r\n');
+  await placeParagraphCaret(page, '后文', 0);
+  await page.keyboard.press('Backspace'); await host.sync();
+  await page.keyboard.type('续'); await host.sync();
+  assert.match(host.source(), /前文 \$n\$续后文\r\n/);
+  await page.close();
+});
 test('CRLF Markdown keeps syncing repeated and adjacent visual edits', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=visual');
