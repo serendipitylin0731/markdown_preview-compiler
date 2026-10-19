@@ -50,10 +50,11 @@ test.after(async () => { await browser?.close(); await new Promise(resolve => se
 function deliver(page, message) {
   return page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), message);
 }
-async function crlfVisualHarness(page, initialSource) {
+async function visualHarness(page, initialSource) {
   await page.goto(base + '/?mode=visual');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   let source = initialSource;
+  const eol = initialSource.includes('\r\n') ? '\r\n' : '\n';
   let version = 1, count = 0;
   await deliver(page, { type: 'document', source, version, settings: {}, exportSettings: {}, templates: [] });
   return {
@@ -70,7 +71,7 @@ async function crlfVisualHarness(page, initialSource) {
       const edit = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').at(-1));
       count++;
       assert.equal(source.slice(edit.start, edit.end), edit.expected);
-      source = source.slice(0, edit.start) + edit.replacement.replace(/\r?\n/g, '\r\n') + source.slice(edit.end);
+      source = source.slice(0, edit.start) + edit.replacement.replace(/\r?\n/g, eol) + source.slice(edit.end);
       version++;
       await deliver(page, { type: 'documentChanged', source, version });
       await deliver(page, { type: 'editAck', id: edit.id, source, version });
@@ -78,6 +79,23 @@ async function crlfVisualHarness(page, initialSource) {
     }
   };
 }
+test('adding a visual line uses one source newline for LF and CRLF files', async () => {
+  for (const eol of ['\n', '\r\n']) {
+    const page = await browser.newPage();
+    const host = await visualHarness(page, `首行${eol}${eol}后段${eol}`);
+    await page.locator('#documentBody p').first().click();
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter'); await host.sync();
+    assert.equal(host.source(), `首行  ${eol}${eol}后段${eol}`);
+    await page.keyboard.type('新行'); await host.sync();
+    assert.equal(host.source(), `首行  ${eol}新行${eol}${eol}后段${eol}`);
+    assert.equal(await page.locator('#documentBody .md-block').count(), 2);
+    await placeParagraphCaret(page, '新行', 0);
+    await page.keyboard.press('Backspace'); await host.sync();
+    assert.equal(host.source(), `首行新行${eol}${eol}后段${eol}`);
+    await page.close();
+  }
+});
 async function placeParagraphCaret(page, prefix, offset) {
   await page.evaluate(({ prefix, offset }) => {
     const paragraph = [...document.querySelectorAll('#documentBody p')].find(p => p.textContent?.startsWith(prefix));
@@ -91,22 +109,23 @@ async function placeParagraphCaret(page, prefix, offset) {
 }
 test('CRLF paragraph lines insert, merge, delete and retain the editing caret', async () => {
   const page = await browser.newPage();
-  const host = await crlfVisualHarness(page, ['# 主标题', '', '## 背景', '', '甲乙丙丁。', '', '第二段。', '', '第三段。', ''].join('\r\n'));
+  const host = await visualHarness(page, ['# 主标题', '', '## 背景', '', '甲乙丙丁。', '', '第二段。', '', '第三段。', ''].join('\r\n'));
   await page.locator('#documentBody p').filter({ hasText: '甲乙丙丁' }).click();
   await page.keyboard.press('End'); await page.keyboard.press('Enter'); await host.sync();
   await page.keyboard.type('新行'); await host.sync();
   await page.keyboard.type('续'); await host.sync();
-  assert.match(host.source(), /甲乙丙丁。\r\n\r\n新行续\r\n/);
+  assert.match(host.source(), /甲乙丙丁。  \r\n新行续\r\n/);
   await page.locator('#documentBody p').filter({ hasText: '新行续' }).selectText();
   await page.keyboard.press('Backspace'); await host.sync();
   assert.doesNotMatch(host.source(), /新行续/);
+  await page.keyboard.press('Backspace'); await host.sync();
   await page.keyboard.type('归'); await host.sync();
   assert.match(host.source(), /甲乙丙丁。归/);
   await page.keyboard.press('Backspace'); await host.sync();
   await placeParagraphCaret(page, '甲乙丙丁', 2);
   await page.keyboard.press('Enter'); await host.sync();
   await page.keyboard.type('插'); await host.sync();
-  assert.match(host.source(), /甲乙\r\n\r\n插丙丁/);
+  assert.match(host.source(), /甲乙  \r\n插丙丁/);
   await placeParagraphCaret(page, '插丙丁', 0);
   await page.keyboard.press('Enter'); await host.sync();
   await page.keyboard.type('首'); await host.sync();
@@ -120,12 +139,12 @@ test('CRLF paragraph lines insert, merge, delete and retain the editing caret', 
   await page.keyboard.type('尾'); await host.sync();
   assert.match(host.source(), /甲乙合首插丙丁。尾第二段。/);
   await page.locator('#documentBody h2').first().click();
-  await page.keyboard.press('End'); await page.keyboard.press('Enter'); await host.sync();
+  await page.keyboard.press('End'); await page.keyboard.press('Enter');
   await page.keyboard.type('副题'); await host.sync();
-  assert.match(host.source(), /## 背景\r\n\r\n副题\r\n/);
+  assert.match(host.source(), /## 背景\r\n副题\r\n/);
   await page.locator('#documentBody p').filter({ hasText: '第三段' }).click();
   await page.keyboard.press('End'); await page.keyboard.insertText('粘贴甲\n粘贴乙'); await host.sync();
-  assert.match(host.source(), /粘贴甲\r\n\r\n粘贴乙/);
+  assert.match(host.source(), /粘贴甲  \r\n粘贴乙/);
   await page.waitForTimeout(350);
   assert.match(host.source(), /第三段/);
   await page.close();
@@ -134,7 +153,7 @@ test('CRLF list, code and aligned table edits preserve adjacent content and undo
   const page = await browser.newPage();
   const source = ['# 文档', '', '- 首项含 $n$', '- 次项', '- 末项', '', '后续段落。', '',
     '```text', 'A', 'B', '```', '', '| 甲 | 乙 |', '| :---: | ---: |', '| 1 | 2 |', '| 3 | 4 |', '', '末尾段落。', ''].join('\r\n');
-  const host = await crlfVisualHarness(page, source);
+  const host = await visualHarness(page, source);
   await page.locator('#documentBody li').first().click();
   await page.keyboard.press('End'); await page.keyboard.press('Enter'); await host.sync();
   await page.keyboard.type('新增项'); await host.sync();
@@ -188,7 +207,7 @@ test('CRLF list, code and aligned table edits preserve adjacent content and undo
 test('CRLF nested lists and task checks keep their markers when edited', async () => {
   const page = await browser.newPage();
   const source = ['3. 父项', '   - 子项甲', '   - 子项乙', '4. 第二项', '', '- [ ] 待办', ''].join('\r\n');
-  const host = await crlfVisualHarness(page, source);
+  const host = await visualHarness(page, source);
   await page.locator('#documentBody li').filter({ hasText: '子项甲' }).last().click();
   await page.keyboard.press('End'); await page.keyboard.type('续'); await host.sync();
   assert.match(host.source(), /3\. 父项\r\n   - 子项甲续\r\n   - 子项乙\r\n4\. 第二项/);
@@ -198,7 +217,7 @@ test('CRLF nested lists and task checks keep their markers when edited', async (
 });
 test('CRLF paragraph merge next to inline math keeps the formula intact', async () => {
   const page = await browser.newPage();
-  const host = await crlfVisualHarness(page, '前文 $n$\r\n\r\n后文\r\n');
+  const host = await visualHarness(page, '前文 $n$\r\n\r\n后文\r\n');
   await placeParagraphCaret(page, '后文', 0);
   await page.keyboard.press('Backspace'); await host.sync();
   await page.keyboard.type('续'); await host.sync();
@@ -303,23 +322,27 @@ test('IME composition and new paragraphs sync without phonetic text or duplicate
     await deliver(page, { type: 'documentChanged', source, version });
     await deliver(page, { type: 'editAck', id: edit.id, source, version });
   };
-  await sync('开头\n\n为什么\n\n## 使用\n');
+  await sync('开头  \n为什么\n\n## 使用\n');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'saveDocument'), { timeout: 5000 });
-  assert.equal(await page.locator('#documentBody .md-block').count(), 3);
-  await page.locator('#documentBody .md-block').nth(1).locator('p').click();
+  assert.equal(await page.locator('#documentBody .md-block').count(), 2);
+  await page.locator('#documentBody .md-block').first().locator('p').last().click();
   await page.keyboard.press('End');
   await page.keyboard.type('呀');
-  await sync('开头\n\n为什么呀\n\n## 使用\n');
+  await sync('开头  \n为什么呀\n\n## 使用\n');
   await page.keyboard.press('Enter');
   await page.keyboard.type('新');
-  await sync('开头\n\n为什么呀\n\n新\n\n## 使用\n');
+  await sync('开头  \n为什么呀  \n新\n\n## 使用\n');
   await page.keyboard.type('段');
-  await sync('开头\n\n为什么呀\n\n新段\n\n## 使用\n');
-  assert.equal(await page.locator('#documentBody .md-block').count(), 4);
-  await page.locator('#documentBody .md-block').nth(2).locator('p').selectText();
+  await sync('开头  \n为什么呀  \n新段\n\n## 使用\n');
+  assert.equal(await page.locator('#documentBody .md-block').count(), 2);
+  await page.locator('#documentBody .md-block').first().locator('p').last().selectText();
   await page.keyboard.press('Backspace');
-  await sync('开头\n\n为什么呀\n\n## 使用\n');
-  await page.locator('#documentBody .md-block').nth(1).locator('p').selectText();
+  await sync('开头  \n为什么呀  \n\n## 使用\n');
+  await page.keyboard.press('Backspace');
+  await sync('开头  \n为什么呀\n\n## 使用\n');
+  await page.locator('#documentBody .md-block').first().locator('p').last().selectText();
+  await page.keyboard.press('Backspace');
+  await sync('开头  \n\n## 使用\n');
   await page.keyboard.press('Backspace');
   await sync('开头\n\n## 使用\n');
   await page.close();

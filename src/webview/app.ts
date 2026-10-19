@@ -535,7 +535,37 @@ function onKeydown(event: KeyboardEvent) {
       removeBlock(block!);
       return;
     }
-    if (content.children.length > 1 || (content.children.length === 1 && !/^(P|H[1-6])$/.test(content.firstElementChild?.tagName || ''))) return;
+    if (content.children.length > 1) {
+      const anchor = selection.anchorNode?.nodeType === 1 ? selection.anchorNode as Element : selection.anchorNode?.parentElement;
+      const line = anchor?.closest('p, div') as HTMLElement | null;
+      if (line?.parentElement === content && line.matches('p, div')) {
+        const other = (event.key === 'Backspace' ? line.previousElementSibling : line.nextElementSibling) as HTMLElement | null;
+        if (other?.matches('p, div')) {
+          const edge = selection.getRangeAt(0).cloneRange();
+          edge.selectNodeContents(line);
+          if (event.key === 'Backspace') edge.setEnd(selection.anchorNode!, selection.anchorOffset);
+          else edge.setStart(selection.anchorNode!, selection.anchorOffset);
+          if (!edge.toString().length) {
+            event.preventDefault();
+            const first = event.key === 'Backspace' ? other : line;
+            const second = event.key === 'Backspace' ? line : other;
+            if (!first.textContent?.trim() && first.querySelector('br')) first.replaceChildren();
+            const caretIndex = first.childNodes.length;
+            if (second.textContent?.trim() || second.querySelector('img, input, code')) {
+              while (second.firstChild) first.appendChild(second.firstChild);
+            }
+            second.remove();
+            const caret = document.createRange();
+            caret.setStart(first, caretIndex); caret.collapse(true);
+            selection.removeAllRanges(); selection.addRange(caret);
+            scheduleBlockSave(block!);
+            return;
+          }
+        }
+      }
+      return;
+    }
+    if (content.children.length === 1 && !/^(P|H[1-6])$/.test(content.firstElementChild?.tagName || '')) return;
     const range = selection.getRangeAt(0).cloneRange();
     const index = Number(block?.dataset.index);
     if (event.key === 'Delete') {
@@ -544,7 +574,8 @@ function onKeydown(event: KeyboardEvent) {
       const current = blocks[index], next = blocks[index + 1];
       if (!current || !next) return;
       const currentBreak = current.raw.endsWith('\r\n') ? 2 : current.raw.endsWith('\n') ? 1 : 0;
-      const start = Math.max(current.start, current.end - currentBreak), end = next.start;
+      let start = Math.max(current.start, current.end - currentBreak), end = next.start;
+      while (start > current.start && /[ \t]/.test(source[start - 1])) start--;
       if (start === end) return;
       event.preventDefault();
       window.clearTimeout(editTimer); editTimer = undefined;
@@ -562,7 +593,8 @@ function onKeydown(event: KeyboardEvent) {
     window.clearTimeout(editTimer); editTimer = undefined;
     const empty = !content.textContent?.trim();
     const previousBreak = previous.raw.endsWith('\r\n') ? 2 : previous.raw.endsWith('\n') ? 1 : 0;
-    const start = empty ? previous.end : Math.max(previous.start, previous.end - previousBreak);
+    let start = empty ? previous.end : Math.max(previous.start, previous.end - previousBreak);
+    if (!empty) while (start > previous.start && /[ \t]/.test(source[start - 1])) start--;
     const end = empty ? current.end : current.start;
     const expected = source.slice(start, end);
     const id = ++editSerial;
@@ -653,7 +685,15 @@ function serializeBlock(element: HTMLElement, original: Block) {
   const list = children.length === 1 && children[0].matches('ul, ol') ? children[0] as HTMLElement : null;
   const bullet = original.raw.match(/^\s*([*+-])\s/)?.[1] || '-';
   let markdown = list ? serializeList(list, bullet) : children.length > 1 && children.every(child => child.matches('p, div, h1, h2, h3, h4, h5, h6'))
-    ? children.map(child => child.textContent?.trim() ? turndown.turndown(child.outerHTML).trimEnd() : '').join('\n\n')
+    ? children.map((child, index) => {
+      const text = child.textContent?.trim() ? turndown.turndown(child.outerHTML).trimEnd() : '';
+      if (!index) return text;
+      const previous = children[index - 1];
+      // Enter inside a paragraph is one visual line break, not a blank Markdown paragraph.
+      // Markdown needs two spaces before the newline to keep that break in the preview.
+      const separator = previous.matches('p, div') && child.matches('p, div') ? '  \n' : '\n';
+      return separator + text;
+    }).join('')
     : turndown.turndown(copy.innerHTML).trimEnd();
   if (/^\s*[-*+] \[[ xX]\]/m.test(original.raw)) {
     const checked = [...element.querySelectorAll<HTMLInputElement>('input[type=checkbox]')];
