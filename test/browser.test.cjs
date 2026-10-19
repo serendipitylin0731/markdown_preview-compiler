@@ -50,6 +50,33 @@ test.after(async () => { await browser?.close(); await new Promise(resolve => se
 function deliver(page, message) {
   return page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), message);
 }
+test('CRLF Markdown keeps syncing repeated and adjacent visual edits', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  let source = ['# 标题', '', '## 背景', '', '第一段内容。', '', '第二段内容。', '', '包含 $n$ 和 $a_i$ 的公式。', ''].join('\r\n');
+  let version = 1;
+  let editCount = 0;
+  await deliver(page, { type: 'document', source, version, settings: {}, exportSettings: {}, templates: [] });
+  for (const [index, letter] of [[2, 'A'], [2, 'B'], [3, 'C']]) {
+    const block = page.locator('#documentBody .md-block').nth(index);
+    await block.locator('.block-content').click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(letter);
+    await page.waitForFunction(count => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').length > count, editCount, { timeout: 5000 });
+    const edit = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'edit').at(-1));
+    editCount++;
+    assert.equal(source.slice(edit.start, edit.end), edit.expected);
+    source = source.slice(0, edit.start) + edit.replacement.replace(/\r?\n/g, '\r\n') + source.slice(edit.end);
+    version++;
+    await deliver(page, { type: 'documentChanged', source, version });
+    await deliver(page, { type: 'editAck', id: edit.id, source, version });
+    await page.waitForTimeout(350);
+  }
+  assert.match(source, /第一段内容。AB\r\n/);
+  assert.match(source, /第二段内容。C\r\n/);
+  await page.close();
+});
 test('visual editing changes only the selected Markdown block', async () => {
   const page = await browser.newPage();
   const errors = []; page.on('pageerror', error => errors.push(error.message));

@@ -4,6 +4,8 @@ test/**
 node_modules/**
 TASK.md
 README.pdf
+examples/**
+!examples/demo.md
 tsconfig.json
 packages/**
 .git/**

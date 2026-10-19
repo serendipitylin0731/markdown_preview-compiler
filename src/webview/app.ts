@@ -672,6 +672,11 @@ function rebaseTemplateRanges(previous: string, next: string) {
   }
 }
 function applySource(newSource: string, newVersion: number, own = false) {
+  if (newVersion < version) return;
+  if (!own && pendingEdit && document.activeElement?.closest?.('.md-block')) {
+    window.setTimeout(() => applySource(newSource, newVersion), 300);
+    return;
+  }
   if (newSource === source) { version = newVersion; return; }
   rebaseTemplateRanges(source, newSource);
   source = newSource; version = newVersion; pdfDirty = true;
@@ -697,10 +702,6 @@ function applySource(newSource: string, newVersion: number, own = false) {
     renderDocument();
     restoreBlockCaret(caret, index);
     if ((mode === 'pdf' || visualPdf) && autoUpdate) schedulePdf();
-    return;
-  }
-  if (document.activeElement?.closest?.('.md-block') && pendingEdit) {
-    window.setTimeout(() => applySource(newSource, newVersion), 300);
     return;
   }
   pendingEdit = null;
@@ -1846,7 +1847,8 @@ window.addEventListener('message', (event: MessageEvent) => {
     source = message.source; version = message.version; pdfDirty = true; renderDocument(false);
     if (mode === 'pdf' || autoExport) schedulePdf(true);
   } else if (message.type === 'documentChanged') {
-    if (pendingEdit && message.source === pendingEdit.nextSource) {
+    const sameOwnEdit = pendingEdit && message.source.replace(/\r\n?/g, '\n') === pendingEdit.nextSource.replace(/\r\n?/g, '\n');
+    if (sameOwnEdit) {
       applySource(message.source, message.version, true);
     } else applySource(message.source, message.version);
   } else if (message.type === 'editAck') {
