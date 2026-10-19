@@ -435,6 +435,58 @@ test('PDF uses the editor font and a readable light print palette in a dark them
   await page.close();
 });
 
+test('PDF centers display math and keeps quotes light in a dark theme', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await page.addStyleTag({ content: ':root { --vscode-editor-background:#1f1f1f; --vscode-textBlockQuote-background:#333; } body blockquote { background:#333; }' });
+  await deliver(page, { type: 'document', source: '行内公式 $E=mc^2$ 与文字。\n\n$$\n\\begin{aligned} a+b &= c+d \\\\ x+y &= z \\end{aligned}\n$$\n\n> 引用文字。\n',
+    version: 1, settings: {}, exportSettings: { fontSize: 18, align: 'justify', firstLineIndent: 2 }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const layout = await page.evaluate(() => {
+    const paper = document.querySelector('#printHost .print-page');
+    const content = paper.querySelector('.print-content');
+    const math = content.querySelector('.math-block');
+    const inline = content.querySelector('.math-inline');
+    const chinese = content.querySelector('p .print-chinese');
+    const relations = [...math.querySelectorAll('.mrel')].map(el => el.getBoundingClientRect().left);
+    const quote = content.querySelector('blockquote');
+    const canvas = document.querySelector('#pdfPages canvas');
+    const paperRect = paper.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    const mathRect = math.getBoundingClientRect();
+    const quoteRect = quote.getBoundingClientRect();
+    const context = canvas.getContext('2d');
+    const xScale = canvas.width / paperRect.width, yScale = canvas.height / paperRect.height;
+    const pixel = (x, y) => [...context.getImageData(Math.floor((x - paperRect.left) * xScale),
+      Math.floor((y - paperRect.top) * yScale), 1, 1).data].slice(0, 3);
+    const ink = [];
+    for (let x = mathRect.left; x < mathRect.right; x += 1) {
+      for (let y = mathRect.top + 2; y < mathRect.bottom - 2; y += 2) {
+        if (pixel(x, y).every(channel => channel < 120)) { ink.push(x); break; }
+      }
+    }
+    return { quoteBackground: getComputedStyle(quote).backgroundColor,
+      quotePixel: pixel(quoteRect.right - 10, quoteRect.top + 8),
+      mathAlign: getComputedStyle(math).textAlign,
+      relationPositions: relations,
+      inlineBaselineGap: Math.abs(inline.getBoundingClientRect().bottom - chinese.getBoundingClientRect().bottom),
+      mathCenter: (Math.min(...ink) + Math.max(...ink)) / 2,
+      contentCenter: (contentRect.left + contentRect.right) / 2,
+      inkCount: ink.length };
+  });
+  assert.equal(layout.quoteBackground, 'rgb(244, 247, 250)');
+  assert.ok(layout.quotePixel.every(channel => channel > 230), `quote PDF pixel is too dark: ${layout.quotePixel}`);
+  assert.equal(layout.mathAlign, 'center');
+  assert.equal(layout.relationPositions.length, 2);
+  assert.ok(Math.abs(layout.relationPositions[0] - layout.relationPositions[1]) < 1);
+  assert.ok(layout.inlineBaselineGap < 3, `inline math shifted from text: ${layout.inlineBaselineGap}`);
+  assert.ok(layout.inkCount > 10);
+  assert.ok(Math.abs(layout.mathCenter - layout.contentCenter) < 10,
+    `display math shifted from page center: ${JSON.stringify(layout)}`);
+  await page.close();
+});
+
 test('PDF lays out consecutive Chinese characters in one Songti font run', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');
@@ -769,10 +821,38 @@ test('PDF actions appear only while PDF preview is open', async () => {
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   assert.equal(await page.locator('button[data-action=settings]').isVisible(), false);
   await page.locator('button[data-action=pdf]').click();
-  assert.equal(await page.locator('button[data-action=settings]').isVisible(), true);
-  assert.equal(await page.locator('button[data-action=export]').isVisible(), true);
-  await page.locator('button[data-action=pdf]').click();
+  assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'pdf').length), 1);
+  assert.equal(await page.locator('#pdfPane').isVisible(), false);
   assert.equal(await page.locator('button[data-action=settings]').isVisible(), false);
+  await page.close();
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  assert.equal(await pdf.locator('#pdfPane').isVisible(), true);
+  assert.equal(await pdf.locator('#documentPane').isVisible(), false);
+  assert.equal(await pdf.locator('button[data-action=settings]').isVisible(), true);
+  assert.equal(await pdf.locator('button[data-action=export]').isVisible(), true);
+  await pdf.close();
+});
+
+test('switching from visual editing to PDF waits for the last source edit', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=visual');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = '原文。\n';
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.locator('#documentBody p').click();
+  await page.keyboard.press('End');
+  await page.keyboard.type('新增');
+  await page.locator('button[data-action=pdf]').click();
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
+  assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'pdf').length), 0);
+  const edit = await page.evaluate(() => window.__MDC_MESSAGES__.find(m => m.type === 'edit'));
+  const updated = source.slice(0, edit.start) + edit.replacement + source.slice(edit.end);
+  assert.match(updated, /原文。新增/);
+  await deliver(page, { type: 'documentChanged', source: updated, version: 2 });
+  await deliver(page, { type: 'editAck', id: edit.id, source: updated, version: 2 });
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'pdf'));
+  assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'pdf').length), 1);
   await page.close();
 });
 
@@ -836,12 +916,11 @@ test('preview bottom scroll is bounded and does not oscillate on source echo', a
 
 test('PDF layout uses a dragged content rectangle and imported font', async () => {
   const page = await browser.newPage();
-  await page.goto(base + '/?mode=visual');
+  await page.goto(base + '/?mode=pdf');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   const font = { id: 'sample', name: 'Custom.woff2', family: 'mdc-font-sample', url: base + '/fonts/KaTeX_SansSerif-Regular.woff2' };
   await deliver(page, { type: 'document', source: '# 内容\n\n`small`\n\n```txt\nblock\n```\n', version: 1,
     settings: {}, exportSettings: {}, templates: [], fonts: [font] });
-  await page.locator('button[data-action=pdf]').click();
   await page.locator('button[data-action=settings]').click();
   assert.equal(await page.locator('#set-marginTop').inputValue(), '24');
   assert.match(await page.locator('#marginText').textContent(), /上 24、右 22、下 24、左 22/);
@@ -875,25 +954,17 @@ test('PDF layout uses a dragged content rectangle and imported font', async () =
   await page.close();
 });
 
-test('PDF controls show marker state and expand only when a visual pane exists', async () => {
+test('PDF controls show marker state without an editing pane', async () => {
   const page = await browser.newPage();
-  await page.goto(base + '/?mode=visual');
+  await page.goto(base + '/?mode=pdf');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   await deliver(page, { type: 'document', source: '# 内容\n', version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
-  await page.locator('button[data-action=pdf]').click();
   await page.locator('button[data-action=breakMarkers]').click();
   assert.equal(await page.locator('button[data-action=breakMarkers]').textContent(), '显示分页标记');
   assert.equal(await page.locator('button[data-action=breakMarkers]').getAttribute('aria-pressed'), 'false');
-  await page.locator('button[data-action=fullPdf]').click();
-  assert.equal(await page.locator('button[data-action=fullPdf]').textContent(), '返回对照');
   assert.equal(await page.locator('#documentPane').isVisible(), false);
-  await page.locator('button[data-action=fullPdf]').click();
-  assert.equal(await page.locator('#documentPane').isVisible(), true);
+  assert.equal(await page.locator('button[data-action=fullPdf]').count(), 0);
   await page.close();
-  const standalone = await browser.newPage();
-  await standalone.goto(base + '/?mode=pdf');
-  assert.equal(await standalone.locator('button[data-action=fullPdf]').count(), 0);
-  await standalone.close();
 });
 
 test('visual link and image dialogs write safe Markdown targets', async () => {
@@ -1012,10 +1083,9 @@ test('cover fields and Ctrl wheel PDF zoom use the saved layout', async () => {
 
 test('margin and draggable cover previews follow the selected template and landscape paper', async () => {
   const page = await browser.newPage();
-  await page.goto(base + '/?mode=visual');
+  await page.goto(base + '/?mode=pdf');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   await deliver(page, { type: 'document', source: '# 交大报告\n\n正文\n', version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
-  await page.locator('button[data-action=pdf]').click();
   await page.locator('button[data-action=settings]').click();
   assert.equal(await page.locator('input[name=template]').count(), 5);
   await page.locator('input[name=template][value=sjtu-red]').check();
@@ -1164,25 +1234,34 @@ test('all composed Shanghai Jiao Tong backgrounds keep the half-width motif on t
   await page.close();
 });
 
-test('a chosen template loads on the selected preview block range', async () => {
-  const page = await browser.newPage();
-  await page.goto(base + '/?mode=visual');
-  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
-  await deliver(page, { type: 'document', source: '第一段。\n\n第二段。\n', version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
-  await page.locator('button[data-action=pdf]').click();
-  await page.locator('button[data-action=settings]').click();
-  assert.equal(await page.locator('.setting-grid > :first-child strong').textContent(), '模板');
-  await page.locator('input[name=template][value=academic]').check();
-  await page.locator('button[data-action=saveSettings]').click();
-  await page.locator('#documentBody p').first().selectText();
-  await page.locator('#documentBody p').first().dispatchEvent('mouseup');
-  await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'saveSettings').some(m => m.value.templateRanges?.length));
-  const saved = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'saveSettings').findLast(m => m.value.templateRanges?.length).value);
+test('a template chosen in PDF preview can be applied to a visual selection', async () => {
+  const source = '第一段。\n\n第二段。\n';
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(pdf, { type: 'document', source, version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
+  await pdf.locator('button[data-action=settings]').click();
+  assert.equal(await pdf.locator('.setting-grid > :first-child strong').textContent(), '模板');
+  await pdf.locator('input[name=template][value=academic]').check();
+  await pdf.locator('button[data-action=saveSettings]').click();
+  const chosen = await pdf.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'saveSettings')?.value);
+  assert.equal(chosen.pendingTemplateBrush, 'academic');
+  await pdf.close();
+
+  const visual = await browser.newPage();
+  await visual.goto(base + '/?mode=visual');
+  await visual.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(visual, { type: 'document', source, version: 1, settings: { autoUpdate: false }, exportSettings: chosen, templates: [] });
+  await visual.locator('#documentBody p').first().selectText();
+  await visual.locator('#documentBody p').first().dispatchEvent('mouseup');
+  await visual.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'saveSettings').some(m => m.value.templateRanges?.length));
+  const saved = await visual.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'saveSettings').findLast(m => m.value.templateRanges?.length).value);
   assert.deepEqual(saved.templateRanges, [{ start: 0, end: 0, id: 'academic' }]);
   assert.equal(saved.baseTemplate, 'simple');
-  await deliver(page, { type: 'documentChanged', source: '前言。\n\n第一段。\n\n第二段。\n', version: 2 });
-  await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'saveSettings').some(m => m.value.templateRanges?.[0]?.start === 1));
-  await page.close();
+  assert.equal(saved.pendingTemplateBrush, '');
+  await deliver(visual, { type: 'documentChanged', source: '前言。\n\n第一段。\n\n第二段。\n', version: 2 });
+  await visual.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'saveSettings').some(m => m.value.templateRanges?.[0]?.start === 1));
+  await visual.close();
 });
 
 test('deleting all visible text removes its Markdown block, including the first character', async () => {

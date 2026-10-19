@@ -118,6 +118,7 @@ let blocks: Block[] = [];
 let pendingEdit: any = null;
 let editTimer: number | undefined;
 let scheduledBlock: HTMLElement | null = null;
+let queuedPdfSwitch = false;
 let composingBlock: HTMLElement | null = null;
 let saveQueued = false;
 let pdfTimer: number | undefined;
@@ -136,7 +137,6 @@ let imageRequestSerial = 0;
 const pendingImageRequests = new Map<string, { resolve: (data: string) => void; reject: (error: Error) => void; timer: number }>();
 const imageDataCache = new Map<string, Promise<string>>();
 let autoExport = false;
-let visualPdf = false;
 let autoUpdate = true;
 let showBreaks = true;
 let pageBoundaries: Array<{ line: number; page: number; type: string }> = [];
@@ -282,7 +282,7 @@ function toolbar() {
   return `<header class="toolbar"><div class="toolbar-group modes">
     <button data-action="split" class="${mode === 'preview' ? 'selected' : ''}">分屏</button>
     <button data-action="visual" class="${mode === 'visual' ? 'selected' : ''}">预览编辑</button>
-    <button data-action="pdf" class="${mode === 'pdf' || visualPdf ? 'selected' : ''}">PDF 预览</button>
+    <button data-action="pdf" class="${mode === 'pdf' ? 'selected' : ''}">PDF 预览</button>
   </div><div class="toolbar-group visual-tools" style="display:${mode === 'visual' ? 'flex' : 'none'}">
     <select id="blockType" aria-label="段落类型"><option value="p">正文</option>${[1,2,3,4,5,6].map(n => `<option value="h${n}">标题 ${n}</option>`).join('')}</select>
     <button data-action="bold" title="加粗 Ctrl+B"><b>B</b></button><button data-action="italic" title="斜体 Ctrl+I"><i>I</i></button>
@@ -293,15 +293,10 @@ function toolbar() {
     <button data-action="deleteRow">−行</button><button data-action="deleteColumn">−列</button></span>
     <button data-action="inlineCode">行内代码</button><button data-action="code">代码块</button><button data-action="inlineMath">行内公式</button><button data-action="math">独立公式</button><button data-action="mermaid">图表</button>
     <button data-action="break">分页</button>
-  </div><div class="toolbar-group push pdf-actions" ${mode === 'pdf' || visualPdf ? '' : 'hidden'}>
+  </div><div class="toolbar-group push pdf-actions" ${mode === 'pdf' ? '' : 'hidden'}>
     <button data-action="settings">排版设置</button>
     <button data-action="export" class="primary">导出 PDF</button>
   </div></header>`;
-}
-function updatePdfActions() {
-  const actions = root.querySelector<HTMLElement>('.pdf-actions');
-  if (actions) actions.hidden = !(mode === 'pdf' || visualPdf);
-  root.querySelector<HTMLButtonElement>('button[data-action="pdf"]')?.classList.toggle('selected', mode === 'pdf' || visualPdf);
 }
 function pdfControls() {
   return `<div class="pdf-controls"><button data-action="refresh">更新 PDF</button>
@@ -309,10 +304,10 @@ function pdfControls() {
     <button data-action="prev">‹</button><span id="pageInfo">0 / 0</span><button data-action="next">›</button>
     <button data-action="zoomOut">−</button><span id="zoomLabel">100%</span><button data-action="zoomIn">+</button>
     <button data-action="breakMarkers" aria-pressed="${showBreaks}">${showBreaks ? '隐藏分页标记' : '显示分页标记'}</button>
-    ${mode === 'visual' ? '<button data-action="fullPdf" aria-pressed="false">展开 PDF</button>' : ''}</div><div id="pdfStatus" class="pdf-status"></div><div id="pdfPages" class="pdf-pages"></div>`;
+    </div><div id="pdfStatus" class="pdf-status"></div><div id="pdfPages" class="pdf-pages"></div>`;
 }
 function buildShell() {
-  root.innerHTML = `${toolbar()}<div id="workspace" class="${mode} ${visualPdf ? 'with-pdf' : ''}">
+  root.innerHTML = `${toolbar()}<div id="workspace" class="${mode}">
     <div id="documentPane"><div class="document-scroll"><div id="documentBody"></div></div></div>
     <div id="pdfPane">${pdfControls()}</div></div>
     <div id="dialogBackdrop" class="dialog-backdrop hidden"><div id="dialog" class="dialog"></div></div>
@@ -433,7 +428,10 @@ function onCompositionEnd(event: CompositionEvent) {
   if (block !== composingBlock) return;
   composingBlock = null;
   // The final input event can follow compositionend, so let it update the DOM first.
-  window.setTimeout(() => { if (block.isConnected && composingBlock !== block) scheduleBlockSave(block); }, 0);
+  window.setTimeout(() => {
+    if (block.isConnected && composingBlock !== block) scheduleBlockSave(block);
+    continuePdfSwitch();
+  }, 0);
 }
 function renderTypedMarkdown(block: HTMLElement, event: InputEvent) {
   if (event.isComposing || ![' ', '*', '_', '~', '`', '$', '\n', ')', ']'].includes(event.data || '') && event.inputType !== 'insertParagraph') return;
@@ -474,6 +472,7 @@ function applyTemplateToSelection() {
   const start = Math.min(Number(first.dataset.index), Number(last.dataset.index));
   const end = Math.max(Number(first.dataset.index), Number(last.dataset.index));
   exportSettings.templateRanges = [{ start, end, id: templateBrush }];
+  exportSettings.pendingTemplateBrush = '';
   templateBrush = null;
   pdfDirty = true; post('saveSettings', { value: exportSettings }); schedulePdf();
   toast(`模板已应用到第 ${start + 1} 至 ${end + 1} 段`);
@@ -752,6 +751,18 @@ function flushQueuedSave() {
   saveQueued = false;
   post('saveDocument');
 }
+function continuePdfSwitch() {
+  if (!queuedPdfSwitch || pendingEdit || ownEdits.size || composingBlock) return;
+  if (scheduledBlock) {
+    window.clearTimeout(editTimer); editTimer = undefined;
+    const block = scheduledBlock;
+    scheduledBlock = null;
+    saveBlock(block);
+    if (pendingEdit || ownEdits.size) return;
+  }
+  queuedPdfSwitch = false;
+  post('pdf');
+}
 function submitEdit(start: number, end: number, expected: string, replacement: string, id = ++editSerial) {
   ownEdits.set(id, source);
   post('edit', { id, start, end, expected, replacement });
@@ -821,7 +832,7 @@ function applySource(newSource: string, newVersion: number, own = false) {
         if (blocks[i]) element.dataset.line = String(blocks[i].line);
       });
       pendingEdit = null;
-      if (mode === 'visual' && visualPdf && autoUpdate) schedulePdf();
+      if (mode === 'pdf' && autoUpdate) schedulePdf();
       return;
     }
     const explicitCaret = pendingEdit.focusIndex !== undefined;
@@ -835,12 +846,12 @@ function applySource(newSource: string, newVersion: number, own = false) {
       addedBlocks > 0 ? index + Math.min(caret?.childIndex || 0, addedBlocks) : index;
     renderDocument();
     restoreBlockCaret(caret, Math.min(caretBlock, blocks.length - 1));
-    if ((mode === 'pdf' || visualPdf) && autoUpdate) schedulePdf();
+    if (mode === 'pdf' && autoUpdate) schedulePdf();
     return;
   }
   pendingEdit = null;
   renderDocument();
-  if ((mode === 'pdf' || visualPdf) && autoUpdate) schedulePdf();
+  if (mode === 'pdf' && autoUpdate) schedulePdf();
 }
 function captureBlockCaret(block: HTMLElement) {
   const selection = window.getSelection();
@@ -1208,14 +1219,9 @@ function onClick(event: MouseEvent) {
   const action = button.dataset.action!;
   if (['source','split','visual','pdf'].includes(action)) {
     if (action === 'pdf' && mode === 'visual') {
-      visualPdf = !visualPdf; document.getElementById('workspace')!.classList.toggle('with-pdf', visualPdf);
-      updatePdfActions();
-      if (!visualPdf) {
-        root.classList.remove('pdf-full');
-        const expand = root.querySelector<HTMLButtonElement>('button[data-action="fullPdf"]');
-        if (expand) { expand.textContent = '展开 PDF'; expand.setAttribute('aria-pressed', 'false'); }
-      }
-      if (visualPdf) schedulePdf(); return;
+      queuedPdfSwitch = true;
+      continuePdfSwitch();
+      return;
     }
     post(action); return;
   }
@@ -1247,7 +1253,8 @@ function onClick(event: MouseEvent) {
     if (chosenTemplate !== exportSettings.template) {
       exportSettings.baseTemplate = exportSettings.template;
       exportSettings.templateRanges = [];
-      templateBrush = mode !== 'pdf' ? chosenTemplate : null;
+      exportSettings.pendingTemplateBrush = chosenTemplate;
+      templateBrush = mode === 'visual' ? chosenTemplate : null;
     }
     exportSettings.template = chosenTemplate;
     Object.assign(exportSettings, marginDraft);
@@ -1257,7 +1264,7 @@ function onClick(event: MouseEvent) {
       coverDraft![key].map(value => Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 50)]));
     normalizeExportSettings();
     pdfDirty = true; post('saveSettings', { value: exportSettings }); closeDialog(); schedulePdf();
-    if (templateBrush) toast('模板已选中；在文档预览中框选正文，即可将模板应用到该范围。');
+    if (exportSettings.pendingTemplateBrush) toast('在预览编辑中框选正文，可将模板应用到该范围。');
     return;
   }
   if (action === 'saveSource') {
@@ -1277,11 +1284,6 @@ function onClick(event: MouseEvent) {
     button.textContent = showBreaks ? '隐藏分页标记' : '显示分页标记'; button.setAttribute('aria-pressed', String(showBreaks));
     markPageBoundaries();
     post('pageBoundaries', { boundaries: showBreaks ? pageBoundaries : [] });
-    return;
-  }
-  if (action === 'fullPdf') {
-    const expanded = root.classList.toggle('pdf-full');
-    button.textContent = expanded ? '返回对照' : '展开 PDF'; button.setAttribute('aria-pressed', String(expanded));
     return;
   }
   if (action === 'bold' || action === 'italic' || action === 'strike') {
@@ -1780,7 +1782,7 @@ function markPageBoundaries() {
   }
 }
 function schedulePdf(force = false) {
-  if (!(mode === 'pdf' || visualPdf || force || autoExport)) return;
+  if (!(mode === 'pdf' || force || autoExport)) return;
   if (!autoUpdate && !force && !autoExport) return;
   window.clearTimeout(pdfTimer);
   pdfTimer = window.setTimeout(() => void generatePdf(), force ? 0 : 900);
@@ -1979,6 +1981,7 @@ window.addEventListener('message', (event: MessageEvent) => {
     if (exportSettings.fontFamily === 'Arial, sans-serif') exportSettings.fontFamily = '';
     if (exportSettings.titleFontFamily === 'Georgia, serif') exportSettings.titleFontFamily = '';
     normalizeExportSettings();
+    templateBrush = mode === 'visual' ? exportSettings.pendingTemplateBrush || null : null;
     templates = message.templates || []; setFonts(message.fonts || []); autoUpdate = settings.autoUpdate !== false;
     autoExport = !!message.autoExport;
     source = message.source; version = message.version; pdfDirty = true; renderDocument(false);
@@ -2002,13 +2005,17 @@ window.addEventListener('message', (event: MessageEvent) => {
     if (queuedHistory) { const direction = queuedHistory; queuedHistory = null; changeHistory(direction); }
     if (saveQueued) flushQueuedSave();
     else toast('Markdown 已同步');
+    continuePdfSwitch();
   } else if (message.type === 'conflict') {
     pendingEdit = null; ownEdits.clear(); editHistory = []; redoHistory = []; queuedHistory = null; historyDirection = null; saveQueued = false;
     applySource(message.source, message.version); toast('文件已在其他位置修改，页面已更新', true);
+    continuePdfSwitch();
   } else if (message.type === 'settings') {
     settings = message.value; pdfDirty = true; renderDocument(); schedulePdf();
   } else if (message.type === 'exportSettings') {
-    exportSettings = { ...exportSettings, ...message.value }; normalizeExportSettings(); pdfDirty = true; schedulePdf();
+    exportSettings = { ...exportSettings, ...message.value }; normalizeExportSettings();
+    templateBrush = mode === 'visual' ? exportSettings.pendingTemplateBrush || null : null;
+    pdfDirty = true; schedulePdf();
   } else if (message.type === 'templates') {
     templates = message.templates;
     if (message.importedId && templateImportDraft) { templateImportDraft = null; settingsDialog(); }
@@ -2031,8 +2038,6 @@ window.addEventListener('message', (event: MessageEvent) => {
     setFonts(message.fonts || [], message.importedId);
   } else if (message.type === 'scrollToLine') {
     if (mode === 'preview') { lastScrollLine = message.line; scrollToLine(message.line); }
-  } else if (message.type === 'showPdf') {
-    visualPdf = true; document.getElementById('workspace')!.classList.add('with-pdf'); updatePdfActions(); schedulePdf(true);
   } else if (message.type === 'exportNow') {
     void exportPdf();
   } else if (message.type === 'saveResult') toast(message.success ? 'Markdown 已保存' : 'Markdown 保存失败', !message.success);

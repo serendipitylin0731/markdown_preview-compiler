@@ -23,10 +23,6 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 #documentPane { flex: 1; }
 #pdfPane { display: none; background: var(--vscode-sideBar-background, #ededed); border-left: 1px solid var(--vscode-panel-border, #8886); }
 #workspace.pdf #pdfPane { display: flex; width: 100%; flex-direction: column; }
-#workspace.with-pdf #pdfPane { display: flex; flex: 1; flex-direction: column; }
-#workspace.with-pdf #documentPane { flex: 1; }
-#app.pdf-full #documentPane { display: none !important; }
-#app.pdf-full #pdfPane { width: 100%; }
 .document-scroll { height: 100%; overflow: auto; }
 #documentBody { max-width: var(--editor-width); min-height: 100%; padding: 28px 36px max(80px, calc(var(--preview-height, 600px) / 3)); margin: auto; }
 .markdown-body { font-family: var(--editor-font); font-size: var(--editor-size); line-height: var(--editor-line); overflow-wrap: anywhere; }
@@ -134,6 +130,10 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 #printHost .print-content :is(h1, h2, h3, h4, h5, h6, p, li, th, td, blockquote, pre, code, .hljs, .hljs *) { color: #20242a; }
 #printHost .print-content a { color: #155d94; }
 .print-content p { margin-bottom: var(--print-paragraph-gap); text-indent: var(--print-indent); }
+#printHost .print-content .math-block { width: 100%; margin: .8em 0; text-align: center; text-indent: 0; }
+#printHost .print-content .math-block .katex-display,
+#printHost .print-content .math-block .katex-display > .katex { text-align: center; }
+#printHost .print-content blockquote { background-color: #f4f7fa; border-left-color: #aab4bf; color: #20242a; padding: 8px 12px; }
 .print-content h1, .print-content h2, .print-content h3, .print-content h4, .print-content h5, .print-content h6 { break-after: avoid; font-family: var(--print-title-family); font-size: calc(1em * var(--print-heading-scale)); margin-top: calc(1em * var(--print-heading-gap)); font-weight: 700; }
 .print-content h1 { font-size: calc(2em * var(--print-heading-scale)); }
 .print-content h2 { font-size: calc(1.55em * var(--print-heading-scale)); }
@@ -162,7 +162,5 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .print-toc h2 { text-align: center; }
 .print-toc div { padding: 5px 0; border-bottom: 1px dotted #ccc; }
 @media (max-width: 900px) {
-  #workspace.with-pdf { flex-direction: column; }
-  #workspace.with-pdf #pdfPane { min-height: 45%; border-left: 0; border-top: 1px solid var(--vscode-panel-border, #8886); }
   #documentBody { padding: 20px 18px max(65px, calc(var(--preview-height, 600px) / 3)); }
 }

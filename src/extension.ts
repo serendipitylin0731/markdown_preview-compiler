@@ -202,8 +202,9 @@ async function handleMessage(state: Panel, message: any) {
       await showPdf(document);
     } else if (message.type === 'saveSettings') {
       const shared = { ...message.value };
-      const scoped = { baseTemplate: shared.baseTemplate, templateRanges: shared.templateRanges || [] };
-      delete shared.baseTemplate; delete shared.templateRanges;
+      const scoped = { baseTemplate: shared.baseTemplate, templateRanges: shared.templateRanges || [],
+        pendingTemplateBrush: shared.pendingTemplateBrush || '' };
+      delete shared.baseTemplate; delete shared.templateRanges; delete shared.pendingTemplateBrush;
       await extensionContext.globalState.update('exportSettings', shared);
       const selections = extensionContext.globalState.get<Record<string, any>>('templateSelections', {});
       selections[document.uri.toString()] = scoped;
@@ -332,13 +333,8 @@ async function showSplit(document: vscode.TextDocument) {
 
 async function showPdf(document: vscode.TextDocument) {
   const existing = [...panels].find(p => p.uri.toString() === document.uri.toString());
-  if (existing?.mode === 'visual' && existing.panel.active) {
-    post(existing, { type: 'showPdf' });
-    existing.panel.reveal();
-  } else {
-    if (!existing) await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
-    await openPanel(document, 'pdf', vscode.ViewColumn.Two);
-  }
+  if (!existing) await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
+  await openPanel(document, 'pdf', existing?.panel.viewColumn || vscode.ViewColumn.Two);
   await extensionContext.globalState.update('lastMode', 'pdf');
 }
 
