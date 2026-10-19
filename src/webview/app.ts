@@ -685,16 +685,14 @@ function serializeBlock(element: HTMLElement, original: Block) {
   const list = children.length === 1 && children[0].matches('ul, ol') ? children[0] as HTMLElement : null;
   const bullet = original.raw.match(/^\s*([*+-])\s/)?.[1] || '-';
   let markdown = list ? serializeList(list, bullet) : children.length > 1 && children.every(child => child.matches('p, div, h1, h2, h3, h4, h5, h6'))
-    ? children.map((child, index) => {
-      const text = child.textContent?.trim() ? turndown.turndown(child.outerHTML).trimEnd() : '';
-      if (!index) return text;
-      const previous = children[index - 1];
-      // Enter inside a paragraph is one visual line break, not a blank Markdown paragraph.
-      // Markdown needs two spaces before the newline to keep that break in the preview.
-      const separator = previous.matches('p, div') && child.matches('p, div') ? '  \n' : '\n';
-      return separator + text;
-    }).join('')
+    ? children.map(child => child.textContent?.trim() ? turndown.turndown(child.outerHTML).trimEnd() : '').join('\n\n')
     : turndown.turndown(copy.innerHTML).trimEnd();
+  const soleParagraph = children.length === 1 && children[0].matches('p, div') ? children[0] : null;
+  if (soleParagraph?.lastElementChild?.tagName === 'BR' &&
+      soleParagraph.lastElementChild.previousElementSibling?.tagName === 'BR') {
+    // Chromium keeps a second BR as the caret placeholder after Shift+Enter.
+    markdown += '  \n';
+  }
   if (/^\s*[-*+] \[[ xX]\]/m.test(original.raw)) {
     const checked = [...element.querySelectorAll<HTMLInputElement>('input[type=checkbox]')];
     let i = 0;
@@ -718,11 +716,28 @@ function saveBlock(element: HTMLElement) {
     removeBlock(element);
     return;
   }
-  const replacement = serializeBlock(element, original);
-  if (replacement === original.raw) { if (saveQueued) flushQueuedSave(); return; }
+  const lastChild = content?.lastElementChild;
+  if (content && content.children.length > 1 && lastChild?.matches('p, div') &&
+      !lastChild.textContent?.trim() && !lastChild.querySelector('img, table, input, code, pre, svg, iframe')) {
+    // Keep the empty paragraph in the editor until it receives text. Saving it now
+    // leaves a blank source line that gets duplicated when the text is typed.
+    if (saveQueued) flushQueuedSave();
+    return;
+  }
+  let replacement = serializeBlock(element, original);
+  let editEnd = original.end;
+  const next = blocks[index + 1];
+  const addedVisualLine = (content?.children.length || 0) > 1 || !!content?.querySelector('br');
+  if (addedVisualLine && next && /^\s*$/.test(source.slice(original.end, next.start))) {
+    const eol = original.raw.includes('\r\n') ? '\r\n' : '\n';
+    replacement = replacement.replace(/(?:\r?\n)+$/, '') + eol + eol;
+    editEnd = next.start;
+  }
+  const expected = source.slice(original.start, editEnd);
+  if (replacement === expected) { if (saveQueued) flushQueuedSave(); return; }
   pendingEdit = { id: ++editSerial, index, element, replacement, snapshot: element.innerHTML,
-    nextSource: source.slice(0, original.start) + replacement + source.slice(original.end) };
-  submitEdit(original.start, original.end, original.raw, replacement, pendingEdit.id);
+    nextSource: source.slice(0, original.start) + replacement + source.slice(editEnd) };
+  submitEdit(original.start, editEnd, expected, replacement, pendingEdit.id);
   toast('正在同步 Markdown…');
 }
 function flushQueuedSave() {
