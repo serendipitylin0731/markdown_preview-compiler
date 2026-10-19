@@ -8,6 +8,7 @@ import katex from 'katex';
 import mermaid from 'mermaid';
 import { mathjax } from 'mathjax-full/js/mathjax.js';
 import { TeX } from 'mathjax-full/js/input/tex.js';
+import 'mathjax-full/js/input/tex/ams/AmsConfiguration.js';
 import { SVG } from 'mathjax-full/js/output/svg.js';
 import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
 import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
@@ -137,6 +138,7 @@ let pdfTimer: number | undefined;
 let pdfBytes: Uint8Array | null = null;
 let pdfPreviewImages: string[] = [];
 let pdfPreviewSize: [number, number] = [210, 297];
+let renderedPageRefs: HTMLElement[] = [];
 let pdfObserver: IntersectionObserver | null = null;
 let pdfRenderToken = 0;
 let pdfPage = 1;
@@ -144,6 +146,14 @@ let pdfScale = 1;
 let pdfBusy = false;
 let pdfQueued = false;
 let pdfDirty = true;
+let pdfRevision = 0;
+let layoutTimer: number | undefined;
+let layoutReady: Promise<HTMLElement[]> = Promise.resolve([]);
+let resolveLayout: ((pages: HTMLElement[]) => void) | null = null;
+let layoutPages: HTMLElement[] = [];
+let layoutBlocks: string[] = [];
+let layoutBlockLines: number[] = [];
+let layoutSettings = '';
 const imageSession = Date.now().toString(36) + Math.random().toString(36).slice(2);
 let imageRequestSerial = 0;
 const pendingImageRequests = new Map<string, { resolve: (data: string) => void; reject: (error: Error) => void; timer: number }>();
@@ -882,7 +892,7 @@ function applySource(newSource: string, newVersion: number, own = false) {
         if (blocks[i]) element.dataset.line = String(blocks[i].line);
       });
       pendingEdit = null;
-      if (mode === 'pdf' && autoUpdate) schedulePdf();
+      if (mode === 'pdf') schedulePdf();
       return;
     }
     const explicitCaret = pendingEdit.focusIndex !== undefined;
@@ -896,12 +906,12 @@ function applySource(newSource: string, newVersion: number, own = false) {
       addedBlocks > 0 ? index + Math.min(caret?.childIndex || 0, addedBlocks) : index;
     renderDocument();
     restoreBlockCaret(caret, Math.min(caretBlock, blocks.length - 1));
-    if (mode === 'pdf' && autoUpdate) schedulePdf();
+    if (mode === 'pdf') schedulePdf();
     return;
   }
   pendingEdit = null;
   renderDocument();
-  if (mode === 'pdf' && autoUpdate) schedulePdf();
+  if (mode === 'pdf') schedulePdf();
 }
 function captureBlockCaret(block: HTMLElement) {
   const selection = window.getSelection();
@@ -1557,7 +1567,9 @@ function makePrintBlock(block: Block): HTMLElement {
     const tex = display ? block.raw.replace(/^\s*\$\$\s*/, '').replace(/\s*\$\$\s*$/, '') : element.dataset.tex || '';
     try {
       const result = printMathDocument.convert(tex, { display });
-      const svg = mathAdaptor.outerHTML(result).match(/<svg\b[\s\S]*<\/svg>/)?.[0];
+      const mathHtml = mathAdaptor.outerHTML(result);
+      if (mathHtml.includes('data-mjx-error')) continue;
+      const svg = mathHtml.match(/<svg\b[\s\S]*<\/svg>/)?.[0];
       if (svg) {
         const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
         for (const use of parsed.querySelectorAll('use')) {
@@ -1635,13 +1647,36 @@ function textLineBottoms(element: HTMLElement): number[] {
   }
   return [...new Set(bottoms.map(value => Math.round(value * 10) / 10))].sort((a, b) => a - b);
 }
-async function paginate() {
+async function paginate(revision: number, rebuild = false) {
   const host = document.getElementById('printHost')!;
-  host.innerHTML = '';
-  const pages: HTMLElement[] = [];
-  const boundaries: Array<{ line: number; page: number; type: string }> = [];
+  const layoutKey = JSON.stringify([exportSettings, settings.editorFontFamily]);
+  let firstChanged = 0;
+  if (!rebuild && layoutSettings === layoutKey && layoutPages.length && layoutPages.every(page => page.isConnected)) {
+    while (firstChanged < Math.min(blocks.length, layoutBlocks.length) &&
+      blocks[firstChanged].raw === layoutBlocks[firstChanged] && blocks[firstChanged].line === layoutBlockLines[firstChanged]) firstChanged++;
+    if (firstChanged === blocks.length && firstChanged === layoutBlocks.length) {
+      markPageBoundaries();
+      return layoutPages;
+    }
+  }
+  // A cover title or table of contents can depend on text anywhere in the file.
+  const partial = !rebuild && !exportSettings.cover && !exportSettings.toc && layoutSettings === layoutKey &&
+    layoutPages.length && layoutPages.every(page => page.isConnected) && firstChanged > 0;
+  let affected = partial ? Math.min(firstChanged, layoutBlocks.length - 1) : 0;
+  let firstPage = partial ? layoutPages.findIndex(page =>
+    !!page.querySelector(`.print-content > [data-block-index="${affected}"]`)) : -1;
+  if (firstPage < 0) firstPage = 0;
+  const pages: HTMLElement[] = firstPage ? layoutPages.slice(0, firstPage + 1) : [];
+  const boundaries: Array<{ line: number; page: number; type: string }> = firstPage ?
+    pageBoundaries.filter(boundary => boundary.page <= pages.length) : [];
+  if (pages.length) {
+    pages.at(-1)!.querySelectorAll<HTMLElement>('.print-content > [data-block-index]').forEach(element => {
+      if (Number(element.dataset.blockIndex) >= affected) element.remove();
+    });
+    layoutPages.slice(firstPage + 1).forEach(page => page.remove());
+  } else host.innerHTML = '';
   const title = blocks.find(b => /^#\s+/.test(b.raw))?.raw.replace(/^#\s+/, '').trim() || '文档';
-  if (exportSettings.cover) {
+  if (exportSettings.cover && !pages.length) {
     const cover = makePage(1, 0, true);
     const fields = [
       ['title', title], ['subtitle', exportSettings.coverSubtitle],
@@ -1661,11 +1696,13 @@ async function paginate() {
     if (!ranges.length) return exportSettings.template;
     return ranges.find((range: any) => index >= range.start && index <= range.end)?.id || exportSettings.baseTemplate || exportSettings.template;
   };
-  let currentTemplate = templateForBlock(0);
-  let page = makePage(pages.length + 1, 0, false, currentTemplate);
-  host.append(page); pages.push(page);
+  let currentTemplate = templateForBlock(pages.length ? Math.max(0, affected - 1) : 0);
+  let page = pages.at(-1);
+  if (!page?.querySelector('.print-content')) {
+    page = makePage(pages.length + 1, 0, false, currentTemplate); host.append(page); pages.push(page);
+  }
   let content = page.querySelector<HTMLElement>('.print-content')!;
-  if (exportSettings.toc) {
+  if (exportSettings.toc && !firstPage) {
     const toc = document.createElement('div');
     toc.className = 'print-toc';
     toc.innerHTML = `<h2>目录</h2>${blocks.filter(b => /^#{1,3}\s/.test(b.raw)).map(b => {
@@ -1696,7 +1733,8 @@ async function paginate() {
       }
     }
   };
-  for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
+  for (let blockIndex = pages.length && firstPage ? affected : 0; blockIndex < blocks.length; blockIndex++) {
+    if (revision !== pdfRevision) return [];
     const block = blocks[blockIndex];
     const desiredTemplate = templateForBlock(blockIndex);
     if (desiredTemplate !== currentTemplate) {
@@ -1708,11 +1746,16 @@ async function paginate() {
       nextPage(blocks[blockIndex + 1]?.line ?? block.line, 'manual'); continue;
     }
     for (const element of splitImageParagraphs(makePrintBlock(block))) {
+      element.dataset.blockIndex = String(blockIndex);
       content.append(element);
       await localizeImages(element);
+      if (revision !== pdfRevision) return [];
       await waitImages(element);
+      if (revision !== pdfRevision) return [];
       await renderMermaid(element);
+      if (revision !== pdfRevision) return [];
       await rasterizePrintDiagrams(element);
+      if (revision !== pdfRevision) return [];
       if (content.scrollHeight <= contentHeight() + 2) continue;
       content.removeChild(element);
       const table = element.querySelector('table');
@@ -1819,6 +1862,7 @@ async function paginate() {
           }
           const fragment = document.createElement('div');
           fragment.className = 'print-fragment';
+          fragment.dataset.blockIndex = String(blockIndex);
           fragment.style.height = `${height}px`;
           const clone = element.cloneNode(true) as HTMLElement;
           clone.style.position = 'absolute'; clone.style.top = `-${offset}px`; clone.style.left = '0'; clone.style.width = '100%';
@@ -1836,6 +1880,10 @@ async function paginate() {
     }
   });
   pageBoundaries = boundaries;
+  layoutPages = pages;
+  layoutBlocks = blocks.map(block => block.raw);
+  layoutBlockLines = blocks.map(block => block.line);
+  layoutSettings = layoutKey;
   markPageBoundaries();
   post('pageBoundaries', { boundaries: showBreaks ? boundaries : [] });
   return pages;
@@ -1855,9 +1903,34 @@ function markPageBoundaries() {
 }
 function schedulePdf(force = false) {
   if (!(mode === 'pdf' || force || autoExport)) return;
-  if (!autoUpdate && !force && !autoExport) return;
+  const revision = ++pdfRevision;
+  pdfDirty = true;
+  window.clearTimeout(layoutTimer);
+  resolveLayout?.([]);
+  resolveLayout = null;
   window.clearTimeout(pdfTimer);
-  pdfTimer = window.setTimeout(() => void generatePdf(), force ? 0 : 900);
+  // Pagination remains live even while image generation is switched off.
+  layoutReady = new Promise(resolve => {
+    resolveLayout = resolve;
+    layoutTimer = window.setTimeout(() => {
+      void Promise.all([fontsReady, document.fonts.ready]).then(() =>
+        revision === pdfRevision ? paginate(revision, force) : []).then(pages => {
+        if (revision === pdfRevision) {
+          resolveLayout = null;
+          if (!autoUpdate && !force && !autoExport) {
+            const status = document.getElementById('pdfStatus');
+            if (status) status.textContent = '分页已更新 · PDF 待手动更新';
+          }
+        }
+        resolve(pages);
+      }, error => {
+        if (revision === pdfRevision) toast(`分页失败：${error instanceof Error ? error.message : error}`, true);
+        if (revision === pdfRevision) resolveLayout = null;
+        resolve([]);
+      });
+    }, force ? 0 : 80);
+  });
+  if (autoUpdate || force || autoExport) pdfTimer = window.setTimeout(() => void generatePdf(), force ? 0 : 80);
 }
 // html2canvas clones the document into an iframe. In VS Code webviews, linked CSS can fail
 // to load there, so preserve the computed print layout on the captured nodes themselves.
@@ -1888,27 +1961,45 @@ function freezePrintStyles(page: HTMLElement) {
 async function generatePdf() {
   if (pdfBusy) { pdfQueued = true; return; }
   pdfBusy = true; pdfQueued = false;
-  const generationKey = JSON.stringify([version, exportSettings, settings.editorFontFamily]);
+  const revision = pdfRevision;
+  const current = () => revision === pdfRevision;
   const status = document.getElementById('pdfStatus');
   if (status) status.textContent = '正在生成 PDF…';
   toast('正在生成 PDF…');
   try {
     await fontsReady;
+    if (!current()) return;
     await document.fonts.ready;
-    const pages = await paginate();
+    if (!current()) return;
+    const pages = await layoutReady;
+    if (!current() || !pages.length) return;
     await document.fonts.ready;
+    if (!current()) return;
     await waitImages(document.getElementById('printHost')!);
+    if (!current()) return;
     const [width, height] = paperSize();
     const pdf = new jsPDF({ orientation: exportSettings.orientation, unit: 'mm', format: [width, height], compress: true });
     const previewImages: string[] = [];
+    let reusablePages = 0;
+    if (pdfPreviewSize[0] === width && pdfPreviewSize[1] === height &&
+      (exportSettings.pageNumberFormat !== 'fraction' || renderedPageRefs.length === pages.length)) {
+      while (reusablePages < pages.length && renderedPageRefs[reusablePages] === pages[reusablePages] &&
+        pdfPreviewImages[reusablePages]) reusablePages++;
+    }
     for (let i = 0; i < pages.length; i++) {
+      if (!current()) return;
       if (i) pdf.addPage([width, height], exportSettings.orientation);
       if (status) status.textContent = `正在生成 PDF：${i + 1} / ${pages.length}`;
       const page = pages[i];
-      freezePrintStyles(page);
-      const canvas = await html2canvas(page, { scale: 2, useCORS: true, allowTaint: false, backgroundColor: '#fff', logging: false,
-        width: page.offsetWidth, height: page.offsetHeight, windowWidth: page.offsetWidth, windowHeight: page.offsetHeight });
-      const image = canvas.toDataURL('image/png');
+      let image: string;
+      if (i < reusablePages) image = pdfPreviewImages[i];
+      else {
+        freezePrintStyles(page);
+        const canvas = await html2canvas(page, { scale: 2, useCORS: true, allowTaint: false, backgroundColor: '#fff', logging: false,
+          width: page.offsetWidth, height: page.offsetHeight, windowWidth: page.offsetWidth, windowHeight: page.offsetHeight });
+        if (!current()) return;
+        image = canvas.toDataURL('image/png');
+      }
       previewImages.push(image);
       pdf.addImage(image, 'PNG', 0, 0, width, height, undefined, 'FAST');
       // Keep links clickable even though the page artwork is rasterized.
@@ -1921,42 +2012,45 @@ async function generatePdf() {
       }
       await new Promise(resolve => setTimeout(resolve, 0));
     }
-    if (generationKey !== JSON.stringify([version, exportSettings, settings.editorFontFamily])) {
-      pdfQueued = true;
-      if (status) status.textContent = '文档已变化，正在重新生成 PDF…';
-      return;
-    }
+    if (!current()) return;
     pdfBytes = new Uint8Array(pdf.output('arraybuffer'));
     pdfDirty = false;
     pdfPreviewImages = previewImages;
     pdfPreviewSize = [width, height];
-    await renderPdfPages();
+    renderedPageRefs = pages;
+    await renderPdfPages(reusablePages);
+    if (!current()) return;
     const missingImages = document.querySelectorAll('#printHost .print-content img.missing-image').length;
     const message = `PDF 已更新 · ${pages.length} 页${missingImages ? ` · ${missingImages} 张图片加载失败` : ''}`;
     if (status) status.textContent = message;
     toast(message, !!missingImages);
     if (autoExport) { autoExport = false; sendPdfBytes(); }
   } catch (error) {
+    if (!current()) return;
     const detail = error instanceof Error ? error.message : String(error);
     if (status) status.textContent = `PDF 生成失败：${detail}`;
     toast(`PDF 生成失败：${detail}`, true);
   } finally {
     pdfBusy = false;
-    if (pdfQueued) schedulePdf(true);
+    if (pdfQueued && (autoUpdate || autoExport)) void generatePdf();
   }
 }
-async function renderPdfPages() {
+async function renderPdfPages(reusablePages = 0) {
   const container = document.getElementById('pdfPages');
   if (!container || !pdfPreviewImages.length) return;
   pdfObserver?.disconnect();
   const token = ++pdfRenderToken;
   const previous = pdfPage;
-  container.innerHTML = '';
+  const retained = [...container.querySelectorAll<HTMLElement>('.pdf-page-slot')].slice(0, reusablePages);
+  if (retained.length !== reusablePages) reusablePages = 0;
+  if (!reusablePages) container.innerHTML = '';
+  else [...container.querySelectorAll<HTMLElement>('.pdf-page-slot')].slice(reusablePages).forEach(slot => slot.remove());
   pdfObserver = new IntersectionObserver(entries => {
     for (const entry of entries) if (entry.isIntersecting)
       void renderPdfSlot(entry.target as HTMLElement, token);
   }, { root: container, rootMargin: '700px 0px' });
   for (let i = 1; i <= pdfPreviewImages.length; i++) {
+    if (i <= reusablePages) { pdfObserver.observe(retained[i - 1]); continue; }
     const slot = document.createElement('div');
     slot.className = 'pdf-page-slot'; slot.dataset.page = String(i);
     slot.style.width = `${Math.ceil(pdfPreviewSize[0] * 72 / 25.4 * pdfScale)}px`;
@@ -1965,7 +2059,7 @@ async function renderPdfPages() {
   }
   jumpPage(Math.min(previous, pdfPreviewImages.length));
   const first = container.querySelector<HTMLElement>('.pdf-page-slot');
-  if (first) await renderPdfSlot(first, token);
+  if (first && !first.querySelector('canvas')) await renderPdfSlot(first, token);
   updatePageInfo();
 }
 async function renderPdfSlot(slot: HTMLElement, token: number) {
@@ -2037,7 +2131,7 @@ function setFonts(items: any[], importedId?: string) {
       select.value = key === 'fontFamily' && importedId ? fonts.find(font => font.id === importedId)?.family || previous : previous;
     }
   }
-  void fontsReady.then(() => { pdfDirty = true; schedulePdf(); });
+  void fontsReady.then(() => { if (layoutPages.length) { pdfDirty = true; schedulePdf(); } });
 }
 window.addEventListener('message', (event: MessageEvent) => {
   const message = event.data;
@@ -2055,6 +2149,8 @@ window.addEventListener('message', (event: MessageEvent) => {
     normalizeExportSettings();
     templateBrush = mode === 'visual' ? exportSettings.pendingTemplateBrush || null : null;
     templates = message.templates || []; setFonts(message.fonts || []); autoUpdate = settings.autoUpdate !== false;
+    const autoUpdateToggle = document.getElementById('autoUpdate') as HTMLInputElement | null;
+    if (autoUpdateToggle) autoUpdateToggle.checked = autoUpdate;
     autoExport = !!message.autoExport;
     source = message.source; version = message.version; pdfDirty = true; renderDocument(false);
     if (mode === 'pdf' || autoExport) schedulePdf(true);
@@ -2083,7 +2179,10 @@ window.addEventListener('message', (event: MessageEvent) => {
     applySource(message.source, message.version); toast('文件已在其他位置修改，页面已更新', true);
     continuePdfSwitch();
   } else if (message.type === 'settings') {
-    settings = message.value; pdfDirty = true; renderDocument(); schedulePdf();
+    settings = message.value; autoUpdate = settings.autoUpdate !== false;
+    const autoUpdateToggle = document.getElementById('autoUpdate') as HTMLInputElement | null;
+    if (autoUpdateToggle) autoUpdateToggle.checked = autoUpdate;
+    pdfDirty = true; renderDocument(); schedulePdf();
   } else if (message.type === 'exportSettings') {
     exportSettings = { ...exportSettings, ...message.value }; normalizeExportSettings();
     templateBrush = mode === 'visual' ? exportSettings.pendingTemplateBrush || null : null;

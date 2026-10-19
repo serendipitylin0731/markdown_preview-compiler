@@ -110,6 +110,7 @@ async function openPanel(document: vscode.TextDocument, mode: Mode, column: vsco
 }
 
 function post(state: Panel, message: unknown) { void state.panel.webview.postMessage(message); }
+function pdfLayoutKey(uri: vscode.Uri) { return `pdfLayout:${uri.toString()}`; }
 function templatesFor(state: Panel) {
   return extensionContext.globalState.get<any[]>('templates', []).map(template => ({
     id: template.id, name: template.name,
@@ -159,7 +160,8 @@ async function handleMessage(state: Panel, message: any) {
   try {
     if (message.type === 'ready') {
       post(state, { type: 'document', source: document.getText(), version: document.version, settings: settings(document.uri),
-        exportSettings: state.exportSettings || {}, templates: templatesFor(state), fonts: fontsFor(state),
+        exportSettings: state.exportSettings || extensionContext.globalState.get<Record<string, any>>(pdfLayoutKey(state.uri), {}),
+        templates: templatesFor(state), fonts: fontsFor(state),
         autoExport: state.autoExport });
       state.autoExport = false;
     } else if (message.type === 'resolveImage') {
@@ -201,6 +203,7 @@ async function handleMessage(state: Panel, message: any) {
       await showPdf(document);
     } else if (message.type === 'saveSettings') {
       state.exportSettings = { ...message.value };
+      await extensionContext.globalState.update(pdfLayoutKey(state.uri), state.exportSettings);
       for (const other of panels) if (other !== state && other.uri.toString() === document.uri.toString()) {
         other.exportSettings = state.exportSettings;
         post(other, { type: 'exportSettings', value: state.exportSettings });

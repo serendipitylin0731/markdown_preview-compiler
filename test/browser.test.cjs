@@ -749,6 +749,98 @@ test('a long paragraph continues across PDF pages', async () => {
   await page.close();
 });
 
+test('pagination stays live with PDF auto update off and preserves earlier pages', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  const prefix = '# 分页实时更新\n\n前面的页面。\n\n<!-- pagebreak -->\n\n';
+  const source = prefix + '后面的内容。'.repeat(220) + '\n';
+  await deliver(page, { type: 'document', source, version: 1,
+    settings: { autoUpdate: false, editorFontFamily: 'Arial, sans-serif' }, exportSettings: { paper: 'a5' }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  await page.evaluate(() => {
+    window.__FIRST_PRINT_PAGE__ = document.querySelector('#printHost .print-page');
+    window.__FIRST_PDF_CANVAS__ = document.querySelector('#pdfPages canvas');
+  });
+  const changed = prefix + '后面的内容。'.repeat(420) + '\n';
+  await deliver(page, { type: 'documentChanged', source: changed, version: 2 });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('分页已更新'), { timeout: 30000 });
+  const state = await page.evaluate(() => ({
+    firstPageKept: window.__FIRST_PRINT_PAGE__ === document.querySelector('#printHost .print-page'),
+    pdfCanvasKept: window.__FIRST_PDF_CANVAS__ === document.querySelector('#pdfPages canvas'),
+    pageCount: document.querySelectorAll('#printHost .print-page').length,
+    boundaries: window.__MDC_MESSAGES__.findLast(m => m.type === 'pageBoundaries')?.boundaries || [],
+    codeFont: getComputedStyle(document.querySelector('#printHost .print-content')).fontFamily
+  }));
+  assert.equal(state.firstPageKept, true);
+  assert.equal(state.pdfCanvasKept, true);
+  assert.ok(state.pageCount >= 3);
+  assert.ok(state.boundaries.some(item => item.type === 'automatic'));
+  await page.locator('#autoUpdate').check();
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
+    window.__FIRST_PDF_CANVAS__ !== document.querySelector('#pdfPages canvas'), { timeout: 30000 });
+  await page.evaluate(() => {
+    window.__FIRST_PDF_CANVAS__ = document.querySelector('#pdfPages canvas');
+    window.__OLD_PDF_SLOTS__ = [...document.querySelectorAll('#pdfPages .pdf-page-slot')];
+  });
+  await deliver(page, { type: 'documentChanged', source: changed.replace('后面的内容。', '后面的新内容。'), version: 3 });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
+    [...document.querySelectorAll('#pdfPages .pdf-page-slot')].some((slot, index) => index > 0 &&
+      window.__OLD_PDF_SLOTS__[index] !== slot), { timeout: 30000 });
+  assert.equal(await page.evaluate(() => window.__FIRST_PDF_CANVAS__ === document.querySelector('#pdfPages canvas')), true);
+  await page.close();
+});
+
+test('code blocks use a monospace font even with a proportional editor font', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '```js\nconst value = 1;\n```\n', version: 1,
+    settings: { fontFamily: 'Arial, sans-serif', editorFontFamily: 'Arial, sans-serif' },
+    exportSettings: { fontFamily: 'Arial, sans-serif' }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const fonts = await page.evaluate(() => ({
+    preview: getComputedStyle(document.querySelector('#documentBody pre code')).fontFamily,
+    print: getComputedStyle(document.querySelector('#printHost pre code')).fontFamily
+  }));
+  assert.match(fonts.preview, /monospace/i);
+  assert.match(fonts.print, /monospace/i);
+  assert.doesNotMatch(fonts.print, /Arial/i);
+  await page.close();
+});
+
+test('a file edit interrupts the PDF currently being generated', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '# 更新\n\n初始内容。\n', version: 1,
+    settings: { autoUpdate: true }, exportSettings: {}, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  await page.evaluate(() => {
+    window.__MDC_FINAL_EDIT_SENT__ = false;
+    window.__MDC_PDF_UPDATES__ = 0;
+    new MutationObserver(() => {
+      if (document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新')) window.__MDC_PDF_UPDATES__++;
+    }).observe(document.getElementById('pdfStatus'), { childList: true, characterData: true, subtree: true });
+    const original = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function (...args) {
+      if (!window.__MDC_FINAL_EDIT_SENT__) {
+        window.__MDC_FINAL_EDIT_SENT__ = true;
+        window.dispatchEvent(new MessageEvent('message', { data: {
+          type: 'documentChanged', source: '# 更新\n\n最终内容。\n', version: 3
+        } }));
+      }
+      return original.apply(this, args);
+    };
+  });
+  await deliver(page, { type: 'documentChanged', source: '# 更新\n\n中间内容。\n', version: 2 });
+  await page.waitForFunction(() => window.__MDC_FINAL_EDIT_SENT__ &&
+    document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
+    document.querySelector('#printHost .print-content')?.textContent?.includes('最终内容'), { timeout: 30000 });
+  assert.equal(await page.evaluate(() => window.__MDC_PDF_UPDATES__), 1);
+  await page.close();
+});
+
 test('automatic pagination continues a table row by row', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');
@@ -789,6 +881,33 @@ test('math, highlighted code, Mermaid and footnotes render safely', async () => 
   assert.equal(mermaid.dark, true);
   assert.equal(mermaid.arrow, 'rgb(190, 205, 227)');
   assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test('branch cases with operatorname render in both preview and PDF', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  const formula = String.raw`$$
+\operatorname{branch}(u,v,w)=
+\begin{cases}
+(v,w),&v=n\text{ 或 }in[v]=2,\\
+(stop[v],w+r[v]),&\text{否则}.
+\end{cases}
+$$`;
+  await deliver(page, { type: 'document', source: formula, version: 1,
+    settings: {}, exportSettings: {}, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const rendering = await page.evaluate(() => ({
+    preview: !!document.querySelector('#documentBody .math-block .katex'),
+    print: !!document.querySelector('#printHost .math-block .print-diagram'),
+    printHeight: document.querySelector('#printHost .math-block .print-diagram')?.getBoundingClientRect().height || 0,
+    chinese: document.querySelector('#documentBody .math-block')?.textContent || ''
+  }));
+  assert.equal(rendering.preview, true);
+  assert.equal(rendering.print, true);
+  assert.ok(rendering.printHeight > 40, `cases formula was flattened to an error: ${rendering.printHeight}px`);
+  assert.match(rendering.chinese, /否则/);
   await page.close();
 });
 

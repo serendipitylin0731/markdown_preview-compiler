@@ -37,6 +37,9 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .markdown-body pre *, .print-content pre * { text-shadow: none !important; box-shadow: none !important; }
 .markdown-body pre code, .markdown-body pre code * { background: transparent !important; text-shadow: none !important; box-shadow: none !important; }
 .markdown-body code { font-family: var(--vscode-editor-font-family, monospace); font-size: .9em; }
+.markdown-body pre, .markdown-body pre *, .markdown-body code, .markdown-body code * {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace !important;
+}
 .markdown-body :not(pre)>code { padding: 1px 4px; border-radius: 3px; background: var(--vscode-textCodeBlock-background, #8882); }
 .markdown-body blockquote { margin: 1em 0; padding: 0 1em; border-left: 4px solid var(--vscode-textBlockQuote-border, #888); color: var(--vscode-textBlockQuote-foreground, inherit); }
 .markdown-body table { width: max-content; min-width: 60%; border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; }

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const Module = require('node:module');
 
-test('PDF layout starts at defaults for each opening while surviving mode switches in one panel', async () => {
+test('PDF layout persists by file across previews without mixing files', async () => {
   const uri = file => ({ fsPath: file, toString: () => `file://${file}` });
   const first = { uri: uri('/workspace/one.md'), languageId: 'markdown', version: 1, getText: () => '# One' };
   const second = { uri: uri('/workspace/two.md'), languageId: 'markdown', version: 1, getText: () => '# Two' };
@@ -85,13 +85,23 @@ test('PDF layout starts at defaults for each opening while surviving mode switch
     const two = panels.at(-1);
     await two.deliver({ type: 'ready' });
     assert.deepEqual(two.messages.at(-1).exportSettings, {}, 'another file must open with defaults');
+    await two.deliver({ type: 'saveSettings', value: { paper: 'letter', marginTop: 18 } });
 
     one.dispose(); two.active = false;
     vscode.window.activeTextEditor = { document: first };
     await commands.get('markdownCompiler.pdf')();
     const reopened = panels.at(-1);
     await reopened.deliver({ type: 'ready' });
-    assert.deepEqual(reopened.messages.at(-1).exportSettings, {}, 'reopening a file must reset its layout');
+    assert.deepEqual(reopened.messages.at(-1).exportSettings, { paper: 'a5', marginTop: 37, template: 'academic',
+      templateRanges: [{ start: 0, end: 1, id: 'technical' }] }, 'reopening a file must restore its own layout');
+    two.dispose(); reopened.active = false;
+    vscode.window.activeTextEditor = { document: second };
+    await commands.get('markdownCompiler.pdf')();
+    const reopenedSecond = panels.at(-1);
+    await reopenedSecond.deliver({ type: 'ready' });
+    assert.deepEqual(reopenedSecond.messages.at(-1).exportSettings, { paper: 'letter', marginTop: 18 });
+    assert.ok(writes.includes(`pdfLayout:${first.uri.toString()}`));
+    assert.ok(writes.includes(`pdfLayout:${second.uri.toString()}`));
     assert.equal(writes.includes('exportSettings') || writes.includes('templateSelections'), false);
   } finally {
     Module._load = originalLoad;
