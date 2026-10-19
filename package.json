@@ -2,7 +2,7 @@
   "name": "markdown-preview-compiler",
   "displayName": "Markdown Preview & Compiler",
   "description": "Markdown source, visual editing, live PDF preview and export.",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "icon": "assets/logo.png",
   "publisher": "serendipity-lin",
   "repository": {
@@ -128,6 +128,7 @@
     "markdown-it-anchor": "^9.2.0",
     "markdown-it-footnote": "^4.0.0",
     "markdown-it-task-lists": "^2.1.1",
+    "mathjax-full": "^3.2.2",
     "mermaid": "^11.17.2",
     "turndown": "^7.2.0",
     "turndown-plugin-gfm": "^1.0.2"

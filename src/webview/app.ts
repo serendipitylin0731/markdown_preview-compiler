@@ -6,6 +6,11 @@ import taskLists from 'markdown-it-task-lists';
 import hljs from 'highlight.js';
 import katex from 'katex';
 import mermaid from 'mermaid';
+import { mathjax } from 'mathjax-full/js/mathjax.js';
+import { TeX } from 'mathjax-full/js/input/tex.js';
+import { SVG } from 'mathjax-full/js/output/svg.js';
+import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
+import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
 import DOMPurify from 'dompurify';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
@@ -16,7 +21,13 @@ import './style.css';
 declare const acquireVsCodeApi: () => { postMessage(value: unknown): void; getState(): any; setState(value: any): void };
 const vscode = acquireVsCodeApi();
 const boot = (window as any).__MDC_BOOT__;
-mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'default' });
+mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base', htmlLabels: false,
+  themeVariables: { primaryColor: '#eef0ff', primaryTextColor: '#20242a', primaryBorderColor: '#7367ed',
+    lineColor: '#63758b', fontFamily: 'Arial, sans-serif' } });
+const mathAdaptor = liteAdaptor();
+RegisterHTMLHandler(mathAdaptor);
+const printMathDocument = mathjax.document('', { InputJax: new TeX({ packages: ['base', 'ams'] }),
+  OutputJax: new SVG({ fontCache: 'local' }) });
 
 const md = new MarkdownIt({
   html: true, linkify: true, typographer: true,
@@ -258,10 +269,48 @@ async function renderMermaid(container: HTMLElement) {
       const id = 'mdc-' + Math.random().toString(36).slice(2);
       const result = await mermaid.render(id, graph);
       element.innerHTML = DOMPurify.sanitize(result.svg, { USE_PROFILES: { svg: true, svgFilters: true } });
+      const svg = element.querySelector('svg');
+      if (/^\s*(?:flowchart|graph)\b/i.test(graph) && !svg?.querySelector('.nodes text'))
+        throw new Error('流程图文字未能渲染');
+      if (!element.closest('#printHost')) {
+        const background = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g)?.slice(0, 3).map(Number) || [];
+        element.classList.toggle('mermaid-dark', background.length === 3 &&
+          background[0] * .2126 + background[1] * .7152 + background[2] * .0722 < 128);
+      }
     } catch (error) {
       element.textContent = `Mermaid 渲染失败：${error instanceof Error ? error.message : error}`;
       element.classList.add('render-error');
     }
+  }
+}
+async function rasterizePrintDiagrams(container: HTMLElement) {
+  for (const svg of container.querySelectorAll<SVGSVGElement>('.mermaid-source svg, .math-inline svg, .math-block svg')) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) continue;
+    const copy = svg.cloneNode(true) as SVGSVGElement;
+    copy.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    copy.setAttribute('width', String(rect.width));
+    copy.setAttribute('height', String(rect.height));
+    const source = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(copy));
+    const image = new Image();
+    image.src = source;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(3, 8192 / Math.max(rect.width, rect.height),
+      Math.sqrt(12000000 / (rect.width * rect.height)));
+    canvas.width = Math.ceil(rect.width * scale);
+    canvas.height = Math.ceil(rect.height * scale);
+    const context = canvas.getContext('2d')!;
+    context.scale(scale, scale);
+    context.drawImage(image, 0, 0, rect.width, rect.height);
+    const result = document.createElement('img');
+    result.className = 'print-diagram';
+    result.src = canvas.toDataURL('image/png');
+    result.style.width = `${rect.width}px`;
+    result.style.height = `${rect.height}px`;
+    result.style.verticalAlign = getComputedStyle(svg).verticalAlign;
+    await result.decode();
+    svg.replaceWith(result);
   }
 }
 function blockMarkup(block: Block, index: number, editable: boolean) {
@@ -1502,6 +1551,27 @@ function makePrintBlock(block: Block): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'print-block';
   wrapper.innerHTML = block.html;
+  for (const element of wrapper.querySelectorAll<HTMLElement>('.math-inline, .math-block')) {
+    const display = element.classList.contains('math-block');
+    const tex = display ? block.raw.replace(/^\s*\$\$\s*/, '').replace(/\s*\$\$\s*$/, '') : element.dataset.tex || '';
+    try {
+      const result = printMathDocument.convert(tex, { display });
+      const svg = mathAdaptor.outerHTML(result).match(/<svg\b[\s\S]*<\/svg>/)?.[0];
+      if (svg) {
+        const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+        for (const use of parsed.querySelectorAll('use')) {
+          const id = (use.getAttribute('href') || use.getAttribute('xlink:href') || '').slice(1);
+          const glyph = id && parsed.getElementById(id);
+          if (!glyph) continue;
+          const copy = glyph.cloneNode(true) as Element;
+          copy.removeAttribute('id');
+          for (const attribute of use.attributes) if (!attribute.name.endsWith('href')) copy.setAttribute(attribute.name, attribute.value);
+          use.replaceWith(copy);
+        }
+        element.innerHTML = DOMPurify.sanitize(parsed.documentElement.outerHTML, { USE_PROFILES: { svg: true, svgFilters: true } });
+      }
+    } catch { /* Keep the KaTeX rendering if MathJax cannot parse this expression. */ }
+  }
   applyChinesePrintFont(wrapper);
   return wrapper;
 }
@@ -1641,6 +1711,7 @@ async function paginate() {
       await localizeImages(element);
       await waitImages(element);
       await renderMermaid(element);
+      await rasterizePrintDiagrams(element);
       if (content.scrollHeight <= contentHeight() + 2) continue;
       content.removeChild(element);
       const table = element.querySelector('table');

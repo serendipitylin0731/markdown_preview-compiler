@@ -449,7 +449,8 @@ test('PDF centers display math and keeps quotes light in a dark theme', async ()
     const math = content.querySelector('.math-block');
     const inline = content.querySelector('.math-inline');
     const chinese = content.querySelector('p .print-chinese');
-    const relations = [...math.querySelectorAll('.mrel')].map(el => el.getBoundingClientRect().left);
+    const mathImage = math.querySelector('img.print-diagram');
+    const inlineImage = inline.querySelector('img.print-diagram');
     const quote = content.querySelector('blockquote');
     const canvas = document.querySelector('#pdfPages canvas');
     const paperRect = paper.getBoundingClientRect();
@@ -469,7 +470,8 @@ test('PDF centers display math and keeps quotes light in a dark theme', async ()
     return { quoteBackground: getComputedStyle(quote).backgroundColor,
       quotePixel: pixel(quoteRect.right - 10, quoteRect.top + 8),
       mathAlign: getComputedStyle(math).textAlign,
-      relationPositions: relations,
+      mathImageSize: [mathImage?.naturalWidth, mathImage?.naturalHeight],
+      inlineImageSize: [inlineImage?.naturalWidth, inlineImage?.naturalHeight],
       inlineBaselineGap: Math.abs(inline.getBoundingClientRect().bottom - chinese.getBoundingClientRect().bottom),
       mathCenter: (Math.min(...ink) + Math.max(...ink)) / 2,
       contentCenter: (contentRect.left + contentRect.right) / 2,
@@ -478,8 +480,8 @@ test('PDF centers display math and keeps quotes light in a dark theme', async ()
   assert.equal(layout.quoteBackground, 'rgb(244, 247, 250)');
   assert.ok(layout.quotePixel.every(channel => channel > 230), `quote PDF pixel is too dark: ${layout.quotePixel}`);
   assert.equal(layout.mathAlign, 'center');
-  assert.equal(layout.relationPositions.length, 2);
-  assert.ok(Math.abs(layout.relationPositions[0] - layout.relationPositions[1]) < 1);
+  assert.ok(layout.mathImageSize[0] > 80 && layout.mathImageSize[1] > 20);
+  assert.ok(layout.inlineImageSize[0] > 30 && layout.inlineImageSize[1] > 10);
   assert.ok(layout.inlineBaselineGap < 3, `inline math shifted from text: ${layout.inlineBaselineGap}`);
   assert.ok(layout.inkCount > 10);
   assert.ok(Math.abs(layout.mathCenter - layout.contentCenter) < 10,
@@ -768,14 +770,75 @@ test('math, highlighted code, Mermaid and footnotes render safely', async () => 
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(base + '/?mode=visual');
   await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
-  const source = '# 技术文档\n\n行内 $E=mc^2$。脚注[^n]\n\n$$\na+b=c\n$$\n\n```js\nconst a = 1;\n```\n\n```mermaid\ngraph TD\n  A-->B\n```\n\n[^n]: 示例脚注\n';
+  await page.addStyleTag({ content: ':root { --vscode-editor-background:#1f1f1f; --vscode-foreground:#ddd; }' });
+  const source = '# 技术文档\n\n行内 $E=mc^2$。脚注[^n]\n\n$$\na+b=c\n$$\n\n```js\nconst a = 1;\n```\n\n```mermaid\nflowchart LR\n  A[编辑 Markdown] --> B[导出 PDF]\n```\n\n[^n]: 示例脚注\n';
   await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
   assert.ok(await page.locator('#documentBody .katex').count() >= 2);
   assert.ok(await page.locator('#documentBody .hljs').count() >= 1);
   assert.ok(await page.locator('#documentBody .footnotes').count() >= 1);
   await page.waitForFunction(() => document.querySelector('#documentBody .mermaid-source svg'), { timeout: 10000 });
   assert.ok(await page.locator('#documentBody .mermaid-source svg path').count() > 0);
+  const mermaid = await page.evaluate(() => {
+    const diagram = document.querySelector('#documentBody .mermaid-source');
+    return { labels: [...diagram.querySelectorAll('.nodes text')].map(el => el.textContent).join(' '),
+      dark: diagram.classList.contains('mermaid-dark'),
+      arrow: getComputedStyle(diagram.querySelector('.edgePaths path')).stroke };
+  });
+  assert.match(mermaid.labels, /编辑 Markdown/);
+  assert.match(mermaid.labels, /导出 PDF/);
+  assert.equal(mermaid.dark, true);
+  assert.equal(mermaid.arrow, 'rgb(190, 205, 227)');
   assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test('PDF preserves the complete sum formula and Mermaid labels from the demo document', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = fs.readFileSync(path.resolve(__dirname, '../examples/demo.md'), 'utf8');
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const ink = await page.evaluate(() => {
+    const countInk = (image, xStart, xEnd, yStart, yEnd) => {
+      const canvas = document.createElement('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+      const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+      const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      let count = 0;
+      for (let y = yStart; y < yEnd; y++) for (let x = xStart; x < xEnd; x++) {
+        const offset = (y * canvas.width + x) * 4;
+        if (data[offset + 3] > 100 && data[offset] < 100 && data[offset + 1] < 100 && data[offset + 2] < 100) count++;
+      }
+      return count;
+    };
+    const math = document.querySelector('#printHost .math-block img.print-diagram');
+    const diagram = document.querySelector('#printHost .mermaid-source img.print-diagram');
+    const paper = math?.closest('.print-page');
+    const preview = document.querySelector('#pdfPages canvas');
+    const previewContext = preview?.getContext('2d');
+    const paperRect = paper?.getBoundingClientRect();
+    const diagramRect = diagram?.getBoundingClientRect();
+    let previewLabels = 0;
+    if (previewContext && paperRect && diagramRect) {
+      const scaleX = preview.width / paperRect.width, scaleY = preview.height / paperRect.height;
+      const x1 = Math.floor((diagramRect.left - paperRect.left + diagramRect.width * .06) * scaleX);
+      const x2 = Math.floor((diagramRect.left - paperRect.left + diagramRect.width * .28) * scaleX);
+      const y1 = Math.floor((diagramRect.top - paperRect.top + diagramRect.height * .35) * scaleY);
+      const y2 = Math.floor((diagramRect.top - paperRect.top + diagramRect.height * .65) * scaleY);
+      const pixels = previewContext.getImageData(x1, y1, x2 - x1, y2 - y1).data;
+      for (let i = 0; i < pixels.length; i += 4)
+        if (pixels[i] < 100 && pixels[i + 1] < 100 && pixels[i + 2] < 100) previewLabels++;
+    }
+    return { math: math && {
+      top: countInk(math, 0, math.naturalWidth, 0, Math.floor(math.naturalHeight / 3)),
+      bottom: countInk(math, 0, math.naturalWidth, Math.floor(math.naturalHeight * 2 / 3), math.naturalHeight),
+      total: countInk(math, 0, math.naturalWidth, 0, math.naturalHeight) },
+      labels: diagram && countInk(diagram, 20, Math.floor(diagram.naturalWidth / 3),
+        Math.floor(diagram.naturalHeight / 3), Math.floor(diagram.naturalHeight * 2 / 3)), previewLabels };
+  });
+  assert.ok(ink.math?.top > 100 && ink.math?.bottom > 100 && ink.math?.total > 2500, JSON.stringify(ink));
+  assert.ok(ink.labels > 100, JSON.stringify(ink));
+  assert.ok(ink.previewLabels > 30, JSON.stringify(ink));
   await page.close();
 });
 
