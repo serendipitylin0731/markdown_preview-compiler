@@ -4,7 +4,7 @@ import * as crypto from 'node:crypto';
 import { imageDataUrl } from './image-source';
 
 type Mode = 'preview' | 'visual' | 'pdf';
-type Panel = { panel: vscode.WebviewPanel; uri: vscode.Uri; mode: Mode; autoExport?: boolean };
+type Panel = { panel: vscode.WebviewPanel; uri: vscode.Uri; mode: Mode; autoExport?: boolean; exportSettings?: Record<string, any> };
 const panels = new Set<Panel>();
 const templateDrafts = new Map<Panel, Record<string, { file: string; name: string }>>();
 const templateSlotPattern = /^(a4|a5|letter)-(portrait|landscape)-(body|cover)$/;
@@ -158,9 +158,8 @@ async function handleMessage(state: Panel, message: any) {
   const document = await vscode.workspace.openTextDocument(state.uri);
   try {
     if (message.type === 'ready') {
-      const scoped = extensionContext.globalState.get<Record<string, any>>('templateSelections', {})[document.uri.toString()] || {};
       post(state, { type: 'document', source: document.getText(), version: document.version, settings: settings(document.uri),
-        exportSettings: { ...extensionContext.globalState.get('exportSettings', {}), ...scoped }, templates: templatesFor(state), fonts: fontsFor(state),
+        exportSettings: state.exportSettings || {}, templates: templatesFor(state), fonts: fontsFor(state),
         autoExport: state.autoExport });
       state.autoExport = false;
     } else if (message.type === 'resolveImage') {
@@ -201,17 +200,11 @@ async function handleMessage(state: Panel, message: any) {
     } else if (message.type === 'pdf') {
       await showPdf(document);
     } else if (message.type === 'saveSettings') {
-      const shared = { ...message.value };
-      const scoped = { baseTemplate: shared.baseTemplate, templateRanges: shared.templateRanges || [],
-        pendingTemplateBrush: shared.pendingTemplateBrush || '' };
-      delete shared.baseTemplate; delete shared.templateRanges; delete shared.pendingTemplateBrush;
-      await extensionContext.globalState.update('exportSettings', shared);
-      const selections = extensionContext.globalState.get<Record<string, any>>('templateSelections', {});
-      selections[document.uri.toString()] = scoped;
-      await extensionContext.globalState.update('templateSelections', selections);
-      for (const other of panels) if (other !== state) post(other, { type: 'exportSettings', value: {
-        ...shared, ...(other.uri.toString() === document.uri.toString() ? scoped : {})
-      } });
+      state.exportSettings = { ...message.value };
+      for (const other of panels) if (other !== state && other.uri.toString() === document.uri.toString()) {
+        other.exportSettings = state.exportSettings;
+        post(other, { type: 'exportSettings', value: state.exportSettings });
+      }
     } else if (message.type === 'saveDocument') {
       const saved = await document.save();
       post(state, { type: 'saveResult', success: saved });

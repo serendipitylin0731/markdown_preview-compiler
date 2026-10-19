@@ -102,7 +102,7 @@ let source = '';
 let version = 0;
 let mode = boot.mode;
 let settings: any = {};
-let exportSettings: any = {
+const defaultExportSettings: any = {
   paper: 'a4', orientation: 'portrait', marginTop: 24, marginRight: 22, marginBottom: 24, marginLeft: 22,
   fontSize: 11, lineHeight: 1.5, paragraphGap: 8, template: 'simple', cover: false, toc: false,
   header: '', footer: '', pageNumbers: true, firstLineIndent: 0, align: 'left',
@@ -112,6 +112,7 @@ let exportSettings: any = {
   coverSubtitle: '', coverAuthor: '', coverDate: true, coverDateText: '',
   coverPositions: { title: [50, 36], subtitle: [50, 47], author: [50, 73], date: [50, 81] }
 };
+let exportSettings: any = structuredClone(defaultExportSettings);
 function normalizeExportSettings() {
   const ranges: any = {
     marginTop: [0, 60], marginRight: [0, 60], marginBottom: [18, 60], marginLeft: [0, 60],
@@ -2048,7 +2049,7 @@ window.addEventListener('message', (event: MessageEvent) => {
     if (message.error) request.reject(new Error(message.error));
     else request.resolve(message.data);
   } else if (message.type === 'document') {
-    settings = message.settings || {}; exportSettings = { ...exportSettings, ...(message.exportSettings || {}) };
+    settings = message.settings || {}; exportSettings = { ...structuredClone(defaultExportSettings), ...(message.exportSettings || {}) };
     if (exportSettings.fontFamily === 'Arial, sans-serif') exportSettings.fontFamily = '';
     if (exportSettings.titleFontFamily === 'Georgia, serif') exportSettings.titleFontFamily = '';
     normalizeExportSettings();
