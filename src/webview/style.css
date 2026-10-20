@@ -145,7 +145,8 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .print-content h3 { font-size: calc(1.3em * var(--print-heading-scale)); }
 .print-content img { max-width: 100%; height: auto; object-fit: contain; }
 .print-content pre { white-space: pre-wrap; word-break: break-word; }
-.print-content pre, .print-content :not(pre)>code { background: var(--print-code-bg); }
+.print-content pre { background: var(--print-code-bg); }
+#printHost .print-content :not(pre)>code { background: transparent; }
 #printHost .print-content pre { background: var(--print-code-bg); }
 #printHost .print-content pre code, #printHost .print-content pre .hljs { background: transparent; }
 .print-content table { width: 100%; display: table; }

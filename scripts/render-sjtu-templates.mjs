@@ -7,8 +7,9 @@ const sizes = { a4: [210, 297], a5: [148, 210], letter: [215.9, 279.4] };
 const colors = ['red', 'blue'];
 const output = new URL('../assets/templates/', import.meta.url);
 const dataUrl = (name, type) => `data:${type};base64,${readFileSync(new URL(`../assets/templates/${name}`, import.meta.url)).toString('base64')}`;
+// The wordmarks are vector paths extracted from the SJTUTeX VIS PDF assets.
 const wordmarks = {
-  red: dataUrl('sjtu-wordmark.png', 'image/png'),
+  red: dataUrl('sjtu-wordmark-red.svg', 'image/svg+xml'),
   blue: dataUrl('sjtu-wordmark-blue.svg', 'image/svg+xml')
 };
 const frames = Object.fromEntries(colors.flatMap(color => [false, true].map(cover =>
@@ -23,8 +24,8 @@ try {
   for (const color of colors) for (const [paper, portrait] of Object.entries(sizes)) {
     for (const orientation of ['portrait', 'landscape']) for (const cover of [false, true]) {
       const [paperWidth, paperHeight] = orientation === 'portrait' ? portrait : [...portrait].reverse();
-      const width = Math.round(paperWidth * 216 / 25.4);
-      const height = Math.round(paperHeight * 216 / 25.4);
+      const width = Math.round(paperWidth * 300 / 25.4);
+      const height = Math.round(paperHeight * 300 / 25.4);
       const outlineWidth = orientation === 'landscape' ? 25 : 34;
       const lineBottom = cover ? 100 / 14 : 110 / 14;
       const frame = frames[`${color}-${cover}`];
