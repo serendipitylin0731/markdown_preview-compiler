@@ -108,13 +108,14 @@ const defaultExportSettings: any = {
   fontSize: 11, lineHeight: 1.5, paragraphGap: 8, template: 'simple', cover: false, toc: false,
   header: '', footer: '', pageNumbers: true, firstLineIndent: 0, align: 'left',
   fontFamily: '', titleFontFamily: '', headingScale: 1,
-  headingGap: 1, pageNumberFormat: 'fraction',
+  headingGap: 1, pageNumberFormat: 'number',
   codeBackground: '#f4f6f8', tableHeaderBackground: '#eef2f6', tableBorderColor: '#aab4bf',
   coverSubtitle: '', coverAuthor: '', coverDate: true, coverDateText: '',
   coverPositions: { title: [50, 36], subtitle: [50, 47], author: [50, 73], date: [50, 81] }
 };
 let exportSettings: any = structuredClone(defaultExportSettings);
 function normalizeExportSettings() {
+  exportSettings.pageNumberFormat = 'number';
   const ranges: any = {
     marginTop: [0, 60], marginRight: [0, 60], marginBottom: [18, 60], marginLeft: [0, 60],
     fontSize: [6, 36], lineHeight: [1, 3], paragraphGap: [0, 50],
@@ -139,7 +140,6 @@ let pdfBytes: Uint8Array | null = null;
 let pdfPreviewImages: string[] = [];
 let pdfPreviewSize: [number, number] = [210, 297];
 let renderedPageRefs: HTMLElement[] = [];
-let completedPdfPageCount = 0;
 let pdfObserver: IntersectionObserver | null = null;
 let pdfRenderToken = 0;
 let pdfPage = 1;
@@ -155,6 +155,7 @@ let layoutPages: HTMLElement[] = [];
 let layoutBlocks: string[] = [];
 let layoutBlockLines: number[] = [];
 let layoutSettings = '';
+let retainedPageGeometry: string[] = [];
 const imageSession = Date.now().toString(36) + Math.random().toString(36).slice(2);
 let imageRequestSerial = 0;
 const pendingImageRequests = new Map<string, { resolve: (data: string) => void; reject: (error: Error) => void; timer: number }>();
@@ -1171,7 +1172,6 @@ function settingsDialog() {
     ${settingField('codeBackground','代码块背景','color')}${settingField('tableHeaderBackground','表头背景','color')}
     ${settingField('tableBorderColor','表格边框','color')}
     ${settingField('header','页眉')}${settingField('footer','页脚')}
-    <label>页码格式<select id="set-pageNumberFormat"><option value="fraction">当前页 / 总页数</option><option value="number">仅页码</option></select></label>
     <label><input id="set-pageNumbers" type="checkbox" ${exportSettings.pageNumbers ? 'checked' : ''}>显示页码</label>
     <label><input id="set-cover" type="checkbox" ${exportSettings.cover ? 'checked' : ''}>封面页</label>
     ${settingField('coverSubtitle','封面副标题')}${settingField('coverAuthor','封面作者')}
@@ -1180,7 +1180,7 @@ function settingsDialog() {
     <div class="cover-position-settings"><strong>封面文字位置</strong><p>在封面模板上拖动文字；选中文字后也可用方向键微调，按 Shift 每次移动 5%。</p><div id="coverSheet" class="cover-sheet" aria-label="拖动调整封面文字位置">${['title','subtitle','author','date'].map((key, i) => `<div class="cover-drag-field ${key}" data-cover-field="${key}" role="button" tabindex="0" aria-label="拖动${['标题','副标题','作者','日期'][i]}"><span class="cover-drag-label">${['标题','副标题','作者','日期'][i]}</span><span class="cover-drag-value"></span></div>`).join('')}</div></div>
     <label><input id="set-toc" type="checkbox" ${exportSettings.toc ? 'checked' : ''}>自动目录</label>
     </div><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="saveSettings" class="primary">应用</button></div>`);
-  for (const key of ['paper','orientation','align','pageNumberFormat']) (document.getElementById('set-' + key) as HTMLSelectElement).value = exportSettings[key];
+  for (const key of ['paper','orientation','align']) (document.getElementById('set-' + key) as HTMLSelectElement).value = exportSettings[key];
   updateVariantSelectors();
   updateMarginSheet(); bindMarginSheet(); updateCoverSheet(); bindCoverSheet();
 }
@@ -1306,7 +1306,7 @@ function onClick(event: MouseEvent) {
     paper: (document.getElementById('set-paper') as HTMLSelectElement)?.value || exportSettings.paper,
     orientation: (document.getElementById('set-orientation') as HTMLSelectElement)?.value || exportSettings.orientation });
   if (action === 'saveSettings') {
-    for (const key of ['paper','orientation','align','fontFamily','titleFontFamily','codeBackground','tableHeaderBackground','tableBorderColor','header','footer','pageNumberFormat','coverSubtitle','coverAuthor']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).value;
+    for (const key of ['paper','orientation','align','fontFamily','titleFontFamily','codeBackground','tableHeaderBackground','tableBorderColor','header','footer','coverSubtitle','coverAuthor']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).value;
     const dateText = (document.getElementById('set-coverDateText') as HTMLInputElement).value.trim();
     exportSettings.coverDateText = dateText === todayDateText() && !exportSettings.coverDateText ? '' : dateText;
     const chosenTemplate = (document.querySelector('input[name=template]:checked') as HTMLInputElement)?.value || 'simple';
@@ -1873,7 +1873,7 @@ async function paginate(revision: number, rebuild = false) {
   pages.forEach((item, i) => {
     const number = item.querySelector('.print-page-number');
     if (number && exportSettings.pageNumbers) {
-      number.textContent = exportSettings.pageNumberFormat === 'number' ? String(i + 1) : `${i + 1} / ${pages.length}`;
+      number.textContent = String(i + 1);
     }
   });
   pageBoundaries = boundaries;
@@ -1881,6 +1881,7 @@ async function paginate(revision: number, rebuild = false) {
   layoutBlocks = blocks.map(block => block.raw);
   layoutBlockLines = blocks.map(block => block.line);
   layoutSettings = layoutKey;
+  reconcileRetainedPages(pages);
   markPageBoundaries();
   post('pageBoundaries', { boundaries: showBreaks ? boundaries : [] });
   return pages;
@@ -1902,6 +1903,65 @@ function pageContainingBlockOrPrevious(index: number) {
   }
   return 0;
 }
+function pageGeometry(page: HTMLElement) {
+  const content = page.querySelector<HTMLElement>('.print-content');
+  if (!content) return '';
+  const top = content.getBoundingClientRect().top;
+  return JSON.stringify([page.className, page.style.backgroundImage,
+    [...content.children].map((part: Element) => {
+      const element = part as HTMLElement;
+      const rect = element.getBoundingClientRect();
+      return [element.dataset.blockIndex, element.className, Math.round(rect.top - top), Math.round(rect.height),
+        element.classList.contains('print-fragment') ? (element.firstElementChild as HTMLElement)?.style.top : ''];
+    })]);
+}
+function changedTextPage(index: number): number | null {
+  const fragments = layoutPages.flatMap((page, pageIndex) =>
+    [...page.querySelectorAll<HTMLElement>(`.print-content > .print-fragment[data-block-index="${index}"]`)]
+      .map(fragment => ({ fragment, pageIndex })));
+  if (fragments.length < 2 || !blocks[index]) return null;
+  const oldContent = fragments[0].fragment.firstElementChild as HTMLElement | null;
+  if (!oldContent || oldContent.querySelector('table, pre, img, svg, .math-inline, .math-block, .mermaid')) return null;
+  const next = document.createElement('div');
+  next.innerHTML = blocks[index].html;
+  const oldText = oldContent.textContent || '';
+  const newText = next.textContent || '';
+  let prefix = 0;
+  while (prefix < Math.min(oldText.length, newText.length) && oldText[prefix] === newText[prefix]) prefix++;
+  if (!oldText.length || prefix === oldText.length && prefix === newText.length) return null;
+  const walker = document.createTreeWalker(oldContent, NodeFilter.SHOW_TEXT);
+  let remaining = Math.min(prefix, oldText.length - 1);
+  let rect: DOMRect | null = null;
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const length = node.textContent?.length || 0;
+    if (remaining >= length) { remaining -= length; continue; }
+    const range = document.createRange();
+    range.setStart(node, remaining);
+    range.setEnd(node, Math.min(length, remaining + 1));
+    rect = range.getClientRects()[0] || null;
+    break;
+  }
+  if (!rect) return null;
+  const offset = rect.top - oldContent.getBoundingClientRect().top;
+  const match = fragments.find(({ fragment }) => {
+    const clone = fragment.firstElementChild as HTMLElement;
+    const start = -parseFloat(clone.style.top || '0');
+    return offset >= start - 1 && offset < start + fragment.getBoundingClientRect().height - 1;
+  });
+  return match?.pageIndex ?? null;
+}
+function reconcileRetainedPages(pages: HTMLElement[]) {
+  for (let i = 0; i < pdfPreviewImages.length; i++) {
+    if (pages[i] && renderedPageRefs[i] !== pages[i]) freezePrintStyles(pages[i]);
+    if (!pages[i] || renderedPageRefs[i] !== pages[i] && retainedPageGeometry[i] !== pageGeometry(pages[i])) {
+      discardPdfPagesFrom(i);
+      break;
+    }
+    renderedPageRefs[i] = pages[i];
+  }
+  retainedPageGeometry = [];
+}
 function affectedPdfPage(force: boolean) {
   const layoutKey = JSON.stringify([exportSettings, settings.editorFontFamily]);
   const changed = firstChangedBlock();
@@ -1909,7 +1969,7 @@ function affectedPdfPage(force: boolean) {
     !layoutPages.length || !layoutPages.every(page => page.isConnected)) return 0;
   if (changed < 0) return pdfPreviewImages.length;
   const affected = Math.min(changed, layoutBlocks.length - 1);
-  return pageContainingBlockOrPrevious(affected);
+  return changedTextPage(affected) ?? pageContainingBlockOrPrevious(affected);
 }
 function markPageBoundaries() {
   document.querySelectorAll('#documentBody .page-boundary').forEach(el => el.remove());
@@ -1930,6 +1990,7 @@ function schedulePdf(rebuild = false, generateNow = false) {
   pdfDirty = true;
   pdfBytes = null;
   discardPdfPagesFrom(affectedPdfPage(rebuild));
+  retainedPageGeometry = layoutPages.slice(0, pdfPreviewImages.length).map(pageGeometry);
   window.clearTimeout(layoutTimer);
   resolveLayout?.([]);
   resolveLayout = null;
@@ -2013,8 +2074,7 @@ async function generatePdf() {
     const [width, height] = paperSize();
     const pdf = new jsPDF({ orientation: exportSettings.orientation, unit: 'mm', format: [width, height], compress: true });
     let reusablePages = 0;
-    if (pdfPreviewSize[0] === width && pdfPreviewSize[1] === height &&
-      (exportSettings.pageNumberFormat !== 'fraction' || completedPdfPageCount === pages.length)) {
+    if (pdfPreviewSize[0] === width && pdfPreviewSize[1] === height) {
       while (reusablePages < pages.length && renderedPageRefs[reusablePages] === pages[reusablePages] &&
         pdfPreviewImages[reusablePages]) reusablePages++;
     }
@@ -2054,7 +2114,6 @@ async function generatePdf() {
     if (!current()) return;
     pdfBytes = new Uint8Array(pdf.output('arraybuffer'));
     pdfDirty = false;
-    completedPdfPageCount = pages.length;
     if (!current()) return;
     const missingImages = document.querySelectorAll('#printHost .print-content img.missing-image').length;
     const message = `PDF 已更新 · ${pages.length} 页${missingImages ? ` · ${missingImages} 张图片加载失败` : ''}`;

@@ -811,7 +811,8 @@ test('pagination stays live with PDF auto update off and preserves earlier pages
   assert.ok(state.boundaries.some(item => item.type === 'automatic'));
   await page.locator('#autoUpdate').check();
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
-    window.__FIRST_PDF_CANVAS__ !== document.querySelector('#pdfPages canvas'), { timeout: 30000 });
+    document.querySelectorAll('#pdfPages .pdf-page-slot').length >= 3, { timeout: 30000 });
+  assert.equal(await page.evaluate(() => window.__FIRST_PDF_CANVAS__ === document.querySelector('#pdfPages canvas')), true);
   await page.evaluate(() => {
     window.__FIRST_PDF_CANVAS__ = document.querySelector('#pdfPages canvas');
     window.__OLD_PDF_SLOTS__ = [...document.querySelectorAll('#pdfPages .pdf-page-slot')];
@@ -831,9 +832,10 @@ test('an edit on page five hides its suffix and reveals each regenerated page', 
   const sections = Array.from({ length: 6 }, (_, i) => `## 第 ${i + 1} 页\n\n第 ${i + 1} 页正文。`);
   const source = sections.join('\n\n<!-- pagebreak -->\n\n') + '\n';
   await deliver(page, { type: 'document', source, version: 1, settings: { autoUpdate: true },
-    exportSettings: { paper: 'a5' }, templates: [] });
+    exportSettings: { paper: 'a5', pageNumberFormat: 'fraction' }, templates: [] });
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
   assert.equal(await page.locator('#pdfPages .pdf-page-slot').count(), 6);
+  assert.equal(await page.locator('#printHost .print-page-number').first().textContent(), '1');
   await page.evaluate(() => {
     window.__OLD_SLOTS__ = [...document.querySelectorAll('#pdfPages .pdf-page-slot')];
     window.__SLOT_COUNTS__ = [];
@@ -871,9 +873,61 @@ test('an edit on page five hides its suffix and reveals each regenerated page', 
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
     document.querySelectorAll('#pdfPages .pdf-page-slot').length === 7, { timeout: 30000 });
   const renumbered = await page.evaluate(() => ({ captures: window.__CAPTURE_COUNT__,
-    firstReplaced: window.__FIRST_SLOT_BEFORE_PAGE_COUNT_CHANGE__ !== document.querySelector('#pdfPages .pdf-page-slot'),
+    firstKept: window.__FIRST_SLOT_BEFORE_PAGE_COUNT_CHANGE__ === document.querySelector('#pdfPages .pdf-page-slot'),
     firstNumber: document.querySelector('#printHost .print-page-number')?.textContent }));
-  assert.deepEqual(renumbered, { captures: 7, firstReplaced: true, firstNumber: '1 / 7' });
+  assert.deepEqual(renumbered, { captures: 2, firstKept: true, firstNumber: '1' });
+  await page.close();
+});
+
+test('editing page five inside one automatically split paragraph keeps earlier PDF pages', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  const sentence = index => `第${String(index).padStart(4, '0')}段文字用于测试自动分页。`;
+  const sentenceCount = 400;
+  const source = '# 长段落\n\n' + Array.from({ length: sentenceCount }, (_, index) => sentence(index)).join('') + '\n';
+  await deliver(page, { type: 'document', source, version: 1, settings: { autoUpdate: true },
+    exportSettings: { paper: 'a5' }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const targetIndex = await page.evaluate((count) => {
+    const pages = [...document.querySelectorAll('#printHost .print-page')];
+    const fragment = pages[4]?.querySelector('.print-fragment');
+    if (!fragment) return -1;
+    const clone = fragment.firstElementChild;
+    const start = -parseFloat(clone.style.top);
+    return Math.floor((start + fragment.getBoundingClientRect().height / 2) / clone.getBoundingClientRect().height * count);
+  }, sentenceCount);
+  assert.ok(targetIndex > 0 && targetIndex < sentenceCount);
+  await page.evaluate(() => {
+    window.__OLD_PDF_SLOTS__ = [...document.querySelectorAll('#pdfPages .pdf-page-slot')];
+    window.__CAPTURE_COUNT__ = 0;
+    const original = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function (...args) {
+      window.__CAPTURE_COUNT__++;
+      return original.apply(this, args);
+    };
+  });
+  const changed = source.replace(sentence(targetIndex), sentence(targetIndex) + '新增内容。'.repeat(90));
+  await deliver(page, { type: 'documentChanged', source: changed, version: 2 });
+  const immediate = await page.evaluate(() => ({
+    count: document.querySelectorAll('#pdfPages .pdf-page-slot').length,
+    prefixKept: window.__OLD_PDF_SLOTS__.slice(0, 4).every((slot, index) =>
+      slot === document.querySelectorAll('#pdfPages .pdf-page-slot')[index])
+  }));
+  assert.deepEqual(immediate, { count: 4, prefixKept: true });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
+    document.querySelectorAll('#pdfPages .pdf-page-slot').length > 4, { timeout: 30000 });
+  const final = await page.evaluate(() => ({
+    pages: document.querySelectorAll('#pdfPages .pdf-page-slot').length,
+    captures: window.__CAPTURE_COUNT__,
+    prefixKept: window.__OLD_PDF_SLOTS__.slice(0, 4).every((slot, index) =>
+      slot === document.querySelectorAll('#pdfPages .pdf-page-slot')[index]),
+    firstNumber: document.querySelector('#printHost .print-page-number')?.textContent
+  }));
+  assert.ok(final.pages > 5, JSON.stringify(final));
+  assert.equal(final.captures, final.pages - 4, JSON.stringify(final));
+  assert.equal(final.prefixKept, true);
+  assert.equal(final.firstNumber, '1');
   await page.close();
 });
 
