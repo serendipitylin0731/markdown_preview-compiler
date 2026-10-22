@@ -766,6 +766,66 @@ test('tester document PDF retains the full list and table', async () => {
   await page.close();
 });
 
+test('HTML details enclose Markdown content and highlight syntax survives preview, editing, and PDF', async () => {
+  const source = '- [ ] 题目\n<details>\n<summary>参考答案</summary>\n\n```bash\ngit init\n```\n\n- 第一条\n- 第二条\n\n</details>\n\n' +
+    '<section class="note">\n\n<div><p>常用 <kbd>Ctrl</kbd>、<sup>2</sup> 和 <mark>HTML 高亮</mark></p></div>\n\n</section>\n\n' +
+    '这是 ==重点 **加粗**==，`==代码==` 保持原样。\n\n' +
+    '<a href="javascript:alert(1)" onclick="alert(1)">不安全链接</a>\n';
+  const preview = await browser.newPage();
+  await preview.goto(base + '/?mode=preview');
+  await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(preview, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  const initial = await preview.evaluate(() => ({
+    detailsCount: document.querySelectorAll('#documentBody details').length,
+    nestedCode: document.querySelector('#documentBody details pre code')?.textContent?.trim(),
+    nestedItems: [...document.querySelectorAll('#documentBody details li')].map(item => item.textContent),
+    nestedSection: document.querySelector('#documentBody section.note div p kbd')?.textContent,
+    mark: document.querySelector('#documentBody p mark strong')?.textContent,
+    literal: document.querySelector('#documentBody p code')?.textContent,
+    unsafeHref: document.querySelector('#documentBody a[href^="javascript:"]')?.getAttribute('href'),
+    unsafeHandler: document.querySelector('#documentBody a[onclick]')?.getAttribute('onclick')
+  }));
+  assert.equal(initial.detailsCount, 1);
+  assert.equal(initial.nestedCode, 'git init');
+  assert.deepEqual(initial.nestedItems, ['第一条', '第二条']);
+  assert.equal(initial.nestedSection, 'Ctrl');
+  assert.equal(initial.mark, '加粗');
+  assert.equal(initial.literal, '==代码==');
+  assert.equal(initial.unsafeHref, undefined);
+  assert.equal(initial.unsafeHandler, undefined);
+  await preview.locator('#documentBody details summary').click();
+  assert.equal(await preview.locator('#documentBody details').evaluate(details => details.open), true);
+  await preview.close();
+
+  const visual = await browser.newPage();
+  await visual.goto(base + '/?mode=visual');
+  await visual.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(visual, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  const htmlBlock = visual.locator('#documentBody .md-block').filter({ has: visual.locator('details') });
+  assert.equal(await htmlBlock.count(), 1);
+  assert.equal(await htmlBlock.locator('.block-content').getAttribute('contenteditable'), null);
+  await htmlBlock.hover();
+  await htmlBlock.locator('[data-action="editSource"]').click();
+  assert.match(await visual.locator('#sourceText').inputValue(), /<details>[\s\S]*git init[\s\S]*<\/details>/);
+  await visual.locator('[data-action="cancelDialog"]').click();
+  await placeParagraphCaret(visual, '这是', 2);
+  await visual.keyboard.type('！');
+  await visual.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'edit'));
+  assert.match((await visual.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'edit')?.replacement)), /==重点 \*\*加粗\*\*==/);
+  await visual.close();
+
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(pdf, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await pdf.locator('#printHost details').first().evaluate(details => details.open), true);
+  assert.equal(await pdf.locator('#printHost details pre code').first().textContent(), 'git init\n');
+  assert.equal(await pdf.locator('#printHost details li').count(), 2);
+  assert.equal(await pdf.locator('#printHost mark').count(), 2);
+  await pdf.close();
+});
+
 test('a long paragraph continues across PDF pages', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');

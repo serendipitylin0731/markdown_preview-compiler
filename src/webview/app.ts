@@ -47,6 +47,24 @@ md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
   if (!silent) { const token = state.push('math_inline', 'span', 0); token.content = state.src.slice(state.pos + 1, end); }
   state.pos = end + 1; return true;
 });
+md.inline.ruler.before('emphasis', 'mark', (state, silent) => {
+  const start = state.pos;
+  if (state.src.slice(start, start + 2) !== '==' || !state.src[start + 2] || /[\s=]/.test(state.src[start + 2])) return false;
+  let end = state.src.indexOf('==', start + 2);
+  while (end >= 0 && (/\s/.test(state.src[end - 1]) ||
+    (state.src.slice(start + 2, end).match(/\\+$/)?.[0].length || 0) % 2 === 1)) {
+    end = state.src.indexOf('==', end + 2);
+  }
+  if (end < 0 || end === start + 2) return false;
+  if (!silent) {
+    const token = state.push('mark', 'mark', 0);
+    token.children = [];
+    state.md.inline.parse(state.src.slice(start + 2, end), state.md, state.env, token.children);
+  }
+  state.pos = end + 2;
+  return true;
+});
+md.renderer.rules.mark = (tokens, i, options, env, self) => `<mark>${self.renderInline(tokens[i].children || [], options, env)}</mark>`;
 md.renderer.rules.math_inline = (tokens, i) => {
   try { return `<span class="math-inline" data-tex="${esc(tokens[i].content)}">${katex.renderToString(tokens[i].content, { throwOnError: false, trust: false, output: 'html' })}</span>`; }
   catch { return '<span class="render-error">公式无法渲染</span>'; }
@@ -89,6 +107,10 @@ md.renderer.rules.html_block = (tokens, i) => {
 };
 const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-', emDelimiter: '*' });
 turndown.use(gfm);
+turndown.addRule('mark', {
+  filter: 'mark',
+  replacement: content => `==${content}==`
+});
 turndown.addRule('math', {
   filter: node => node.nodeType === 1 && (node.classList?.contains('math-inline') || node.classList?.contains('katex')),
   replacement: (_content, node) => {
@@ -199,6 +221,19 @@ function sourceOffsets(input: string) {
   offsets.push(input.length);
   return offsets;
 }
+const htmlContainers = new Set(['details', 'div', 'section', 'article', 'aside', 'figure', 'figcaption',
+  'blockquote', 'table', 'thead', 'tbody', 'tfoot', 'ul', 'ol', 'dl']);
+function htmlContainerBalance(content: string, stack: string[]) {
+  const withoutComments = content.replace(/<!--[\s\S]*?-->/g, '');
+  for (const match of withoutComments.matchAll(/<\s*(\/?)\s*([a-z][\w:-]*)\b[^>]*>/gi)) {
+    const tag = match[2].toLowerCase();
+    if (!htmlContainers.has(tag)) continue;
+    if (match[1]) {
+      const index = stack.lastIndexOf(tag);
+      if (index >= 0) stack.length = index;
+    } else if (!match[0].endsWith('/>')) stack.push(tag);
+  }
+}
 function parseBlocks(input: string): Block[] {
   const offsets = sourceOffsets(input);
   const env = {};
@@ -213,16 +248,28 @@ function parseBlocks(input: string): Block[] {
     spans.push({ start, end, index });
   }
   spans.sort((a, b) => a.start - b.start);
-  const result: Block[] = [];
+  // Keep HTML containers and their Markdown children in one DOM tree. Sanitizing
+  // each token separately would close <details> before its list or code fence.
+  const merged: typeof spans = [];
+  const openHtml: string[] = [];
   for (let i = 0; i < spans.length; i++) {
-    const { start: line, end: endLine, index } = spans[i];
+    const span = spans[i];
+    const current = openHtml.length ? merged.at(-1)! : { ...span };
+    if (!openHtml.length) merged.push(current);
+    else current.end = span.end;
+    for (let j = span.index; j < (spans[i + 1]?.index ?? tokens.length); j++)
+      if (tokens[j].type === 'html_block') htmlContainerBalance(tokens[j].content, openHtml);
+  }
+  const result: Block[] = [];
+  for (let i = 0; i < merged.length; i++) {
+    const { start: line, end: endLine, index } = merged[i];
     const start = offsets[line] ?? input.length;
     const end = offsets[endLine] ?? input.length;
     const raw = input.slice(start, end);
     let protectedBlock = /^\s*(?:`{3,}|~{3,}|\$\$|<!--|<[^!]|\[[^\]]+\]:)/.test(raw) || /<[^>]+>/.test(raw);
     const kind = /^\s*(`{3,}|~{3,})/.test(raw) && !/^\s*(`{3,}|~{3,})\s*mermaid\b/i.test(raw) ? 'code' : /^\s*\$\$/.test(raw) ? 'math' : '';
     if (kind) protectedBlock = false;
-    const next = spans[i + 1]?.index ?? tokens.length;
+    const next = merged[i + 1]?.index ?? tokens.length;
     let html = md.renderer.render(tokens.slice(index, next), md.options, env);
     if (/^\s*(:::|!!!)\s*\w+/m.test(raw)) {
       protectedBlock = true;
@@ -496,7 +543,7 @@ function onCompositionEnd(event: CompositionEvent) {
   }, 0);
 }
 function renderTypedMarkdown(block: HTMLElement, event: InputEvent) {
-  if (event.isComposing || ![' ', '*', '_', '~', '`', '$', '\n', ')', ']'].includes(event.data || '') && event.inputType !== 'insertParagraph') return;
+  if (event.isComposing || ![' ', '*', '_', '~', '`', '$', '=', '\n', ')', ']'].includes(event.data || '') && event.inputType !== 'insertParagraph') return;
   const content = block.querySelector<HTMLElement>('.block-content');
   const only = content?.firstElementChild;
   const plainParagraph = only && only === content.lastElementChild && only.tagName === 'P' &&
@@ -506,7 +553,7 @@ function renderTypedMarkdown(block: HTMLElement, event: InputEvent) {
   const raw = ((plainParagraph ? only : content)?.textContent || '').replace(/\u00a0/g, ' ');
   if (raw.includes('**') && !/\*\*[^*]+\*\*/.test(raw)) return;
   if (raw.includes('~~') && !/~~[^~]+~~/.test(raw)) return;
-  if (!/^(?:#{1,6} |[-*+] |\d+\. |>|```|\$\$)|(?:\*\*[^*]+\*\*|\*[^*]+\*|~~[^~]+~~|`[^`]+`|\$[^$]+\$|\[[^\]]+\]\([^)]+\))/.test(raw)) return;
+  if (!/^(?:#{1,6} |[-*+] |\d+\. |>|```|\$\$)|(?:\*\*[^*]+\*\*|\*[^*]+\*|~~[^~]+~~|==[^=]+==|`[^`]+`|\$[^$]+\$|\[[^\]]+\]\([^)]+\))/.test(raw)) return;
   const rendered = DOMPurify.sanitize(md.render(raw));
   if (!rendered || rendered === content.innerHTML) return;
   content.innerHTML = rendered;
@@ -1563,6 +1610,7 @@ function makePrintBlock(block: Block): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'print-block';
   wrapper.innerHTML = block.html;
+  wrapper.querySelectorAll<HTMLDetailsElement>('details').forEach(details => details.open = true);
   for (const element of wrapper.querySelectorAll<HTMLElement>('.math-inline, .math-block')) {
     const display = element.classList.contains('math-block');
     const tex = display ? block.raw.replace(/^\s*\$\$\s*/, '').replace(/\s*\$\$\s*$/, '') : element.dataset.tex || '';
