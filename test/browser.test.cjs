@@ -1214,6 +1214,28 @@ test('task checkbox is editable only in visual mode', async () => {
   await preview.close();
 });
 
+test('task list with bold text and inline code renders its text once', async () => {
+  const source = '- [ ] **1. 初始化 Git 仓库，将分支设为 `main` 并推送。**\n\n' +
+    '<details>\n<summary>参考答案</summary>\n\n```bash\ngit init\n```\n\n</details>\n';
+  for (const mode of ['preview', 'pdf']) {
+    const page = await browser.newPage();
+    await page.goto(base + `/?mode=${mode}`);
+    await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+    await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+    if (mode === 'pdf')
+      await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+    const state = await page.evaluate(mode => {
+      const list = document.querySelector(mode === 'pdf' ? '#printHost li.task-list-item' : '#documentBody li.task-list-item');
+      return { text: list?.textContent?.trim(), bold: list?.querySelectorAll('strong').length,
+        code: list?.querySelector('code')?.textContent, checkbox: !!list?.querySelector('input[type=checkbox]'),
+        duplicateLabel: !!list?.querySelector('.task-list-item-label') };
+    }, mode);
+    assert.deepEqual(state, { text: '1. 初始化 Git 仓库，将分支设为 main 并推送。', bold: 1,
+      code: 'main', checkbox: true, duplicateLabel: false });
+    await page.close();
+  }
+});
+
 test('split preview offers mode switching inside the preview pane', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=preview');

@@ -38,7 +38,7 @@ const md = new MarkdownIt({
     }
     return `<pre class="hljs"><code>${md.utils.escapeHtml(code)}</code></pre>`;
   }
-}).use(anchor, { permalink: false }).use(footnote).use(taskLists, { enabled: false, label: true, labelAfter: true });
+}).use(anchor, { permalink: false }).use(footnote).use(taskLists, { enabled: false, label: false });
 
 md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
   if (state.src[state.pos] !== '$' || state.src[state.pos + 1] === '$') return false;
