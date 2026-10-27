@@ -72,7 +72,8 @@ body.vscode-dark .code-frame, body.vscode-high-contrast .code-frame { --code-key
   font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; text-align: left; }
 .code-body { display: flex; align-items: stretch; min-width: 0; }
 .code-frame .code-body pre { flex: 1; min-width: 0; margin: 0; padding: 5px 12px 11px;
-  border-radius: 0; background: transparent; }
+  border-radius: 0; background: transparent; font-size: .9em; line-height: var(--editor-line); }
+.code-frame .code-body pre code { font-size: 1em; line-height: inherit; }
 .code-gutter { flex: none; padding: 5px 7px 11px 12px; white-space: pre; text-align: right;
   user-select: none; color: var(--vscode-descriptionForeground, #697783);
   border-right: 1px solid var(--vscode-panel-border, #8886);
@@ -200,7 +201,10 @@ body.vscode-dark .code-frame, body.vscode-high-contrast .code-frame { --code-key
 #printHost .print-content pre { background: var(--print-code-bg); }
 #printHost .print-content .code-frame { background: var(--print-code-bg); }
 #printHost .print-content .code-frame pre { background: var(--print-code-bg); }
+#printHost .print-content .code-frame .code-body pre,
 #printHost .print-content .code-gutter { line-height: var(--print-line-height); }
+#printHost .print-content .code-gutter.positioned { position: relative; white-space: normal; }
+#printHost .print-content .code-line-number { position: absolute; right: 7px; white-space: pre; }
 #printHost .print-content pre code, #printHost .print-content pre .hljs { background: transparent; }
 .print-content table { width: 100%; display: table; }
 .print-content th { background: var(--print-table-header); }

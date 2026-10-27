@@ -1413,6 +1413,74 @@ test('numbered code highlights in split preview, visual editing and paginated PD
   await pdf.close();
 });
 
+test('numbered code lines align with their numbers in every preview mode', async () => {
+  const lines = Array.from({ length: 12 }, (_, i) => `value_${i} = ${i}`);
+  lines.splice(5, 0, '');
+  const source = '```python=\n' + lines.join('\n') + '\n```\n';
+  for (const mode of ['preview', 'visual', 'pdf']) {
+    const page = await browser.newPage();
+    await page.goto(base + `/?mode=${mode}`);
+    await page.waitForFunction(() => window.__MDC_MESSAGES__.some(message => message.type === 'ready'));
+    await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+    if (mode === 'pdf') await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+    const frame = page.locator(mode === 'pdf' ? '#printHost .code-frame' : '#documentBody .code-frame').first();
+    const offsets = await frame.evaluate(frame => {
+      const code = frame.querySelector('pre code'), gutter = frame.querySelector('.code-gutter');
+      const rectAt = (root, offset) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          const node = walker.currentNode;
+          if (offset >= node.length) { offset -= node.length; continue; }
+          const range = document.createRange(); range.setStart(node, offset); range.setEnd(node, offset + 1);
+          return range.getBoundingClientRect().top;
+        }
+        throw new Error('Missing code character');
+      };
+      const codeLines = code.textContent.trimEnd().split('\n');
+      const numberLines = gutter.textContent.split('\n');
+      let codeOffset = 0, numberOffset = 0;
+      return codeLines.map((line, index) => {
+        const gap = Math.abs(rectAt(code, codeOffset) - rectAt(gutter, numberOffset));
+        codeOffset += line.length + 1;
+        numberOffset += numberLines[index].length + 1;
+        return gap;
+      });
+    });
+    assert.ok(Math.max(...offsets) < 2, `${mode} line alignment gaps: ${offsets.join(', ')}`);
+    await page.close();
+  }
+
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__.some(message => message.type === 'ready'));
+  const wrapped = '```python=\nvalue = "' + 'x'.repeat(260) + '"\nprint(value)\n```\n';
+  await deliver(pdf, { type: 'document', source: wrapped, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const positions = await pdf.locator('#printHost .code-frame').first().evaluate(frame => {
+    const code = frame.querySelector('pre code');
+    const second = code.textContent.indexOf('\n') + 1;
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+    let remaining = second, top = NaN;
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (remaining >= node.length) { remaining -= node.length; continue; }
+      const range = document.createRange(); range.setStart(node, remaining); range.setEnd(node, remaining + 1);
+      top = range.getBoundingClientRect().top; break;
+    }
+    const numbers = [...frame.querySelectorAll('.code-line-number')];
+    const lineHeight = parseFloat(getComputedStyle(code).lineHeight);
+    const numberTop = number => {
+      const range = document.createRange(); range.selectNodeContents(number);
+      return range.getBoundingClientRect().top;
+    };
+    return { gap: Math.abs(top - numberTop(numbers[1])),
+      separation: numberTop(numbers[1]) - numberTop(numbers[0]), lineHeight };
+  });
+  assert.ok(positions.separation > positions.lineHeight * 2, JSON.stringify(positions));
+  assert.ok(positions.gap < 2, JSON.stringify(positions));
+  await pdf.close();
+});
+
 test('branch cases with operatorname render in both preview and PDF', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');
@@ -1547,6 +1615,33 @@ test('task checkboxes write back in visual and split preview modes', async () =>
   assert.equal(source, ['# 任务', '', '- [x] 重复', '- [ ] 重复', '  - [x] 子项', '',
     '```md', '- [ ] 代码示例', '```', '', '> - [x] 引用'].join('\r\n') + '\r\n');
   await preview.close();
+});
+
+test('checking a task in split preview keeps the current scroll position until the source cursor moves', async () => {
+  const page = await browser.newPage({ viewport: { width: 820, height: 520 } });
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(message => message.type === 'ready'));
+  const source = Array.from({ length: 45 }, (_, index) => `第 ${index + 1} 段正文。`).join('\n\n') + '\n\n- [ ] 底部任务\n';
+  await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true },
+    exportSettings: {}, templates: [], cursor: { line: 0, character: 0 } });
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(message => message.type === 'pageBoundaries'));
+  const checkbox = page.locator('#documentBody input.task-list-item-checkbox');
+  await checkbox.check();
+  const before = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
+  assert.ok(before > 300);
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(message => message.type === 'edit'));
+  const edit = await page.evaluate(() => window.__MDC_MESSAGES__.find(message => message.type === 'edit'));
+  const updated = source.slice(0, edit.start) + edit.replacement + source.slice(edit.end);
+  await deliver(page, { type: 'documentChanged', source: updated, version: 2, cursor: { line: 0, character: 0 } });
+  await deliver(page, { type: 'editAck', id: edit.id, source: updated, version: 2 });
+  await deliver(page, { type: 'cursorPosition', line: 0, character: 0 });
+  await page.waitForTimeout(250);
+  const after = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
+  assert.ok(Math.abs(after - before) < 2, `task click moved preview from ${before} to ${after}`);
+  await deliver(page, { type: 'cursorPosition', line: 0, character: 1 });
+  const followed = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
+  assert.ok(followed < before - 300, `a later source cursor move did not resume following: ${followed}`);
+  await page.close();
 });
 
 test('task list with bold text and inline code renders its text once', async () => {

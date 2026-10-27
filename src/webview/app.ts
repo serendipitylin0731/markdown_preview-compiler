@@ -241,6 +241,7 @@ let showBreaks = true;
 let pageBoundaries: Array<{ line: number; page: number; type: string }> = [];
 let lastScrollLine = 0;
 let cursorPosition: { line: number; character: number } | null = null;
+let preserveTaskPreviewPosition = false;
 let suppressScrollUntil = 0;
 let lastSentScrollLine = -1;
 let marginDraft: any = null;
@@ -591,7 +592,7 @@ function renderDocument(preserve = true) {
   void renderMermaid(body).then(resync);
   void document.fonts.ready.then(resync);
   if (pane) pane.scrollTop = previous;
-  if (mode === 'preview' && settings.syncScroll) {
+  if (mode === 'preview' && settings.syncScroll && !preserveTaskPreviewPosition) {
     if (cursorPosition) scrollPreviewCursor();
     else if (lastScrollLine) scrollToLine(lastScrollLine);
   }
@@ -686,7 +687,7 @@ function textRectAt(element: HTMLElement, offset: number): DOMRect | null {
 }
 function scrollPreviewCursor() {
   const pane = document.querySelector<HTMLElement>('.document-scroll');
-  if (!pane || !cursorPosition) return;
+  if (!pane || !cursorPosition || preserveTaskPreviewPosition) return;
   const found = cursorBlock();
   const inMetadata = !!frontMatter.raw && cursorPosition.line < frontMatter.bodyLine;
   const content = inMetadata ? document.querySelector<HTMLElement>('#documentBody .document-tags') ||
@@ -1595,6 +1596,7 @@ function togglePreviewTask(input: HTMLInputElement) {
   const replacement = input.checked ? 'x' : ' ';
   if (!/[ xX]/.test(expected) || expected === replacement) return;
   input.disabled = true;
+  preserveTaskPreviewPosition = true;
   submitEdit(start, start + 1, expected, replacement);
 }
 function onClick(event: MouseEvent) {
@@ -2028,6 +2030,44 @@ function setCodePageLines(target: HTMLElement, original: HTMLElement, lines: str
     gutter.textContent = lines.slice(first, last + 1).map((_, index) => String(startNumber + first + index)).join('\n');
   }
 }
+function alignPrintCodeGutters(pages: HTMLElement[]) {
+  for (const frame of pages.flatMap(page => [...page.querySelectorAll<HTMLElement>('.code-frame.with-line-numbers')])) {
+    const code = frame.querySelector<HTMLElement>('pre code');
+    const gutter = frame.querySelector<HTMLElement>('.code-gutter');
+    if (!code || !gutter) continue;
+    const numbers = (gutter.textContent || '').split('\n');
+    const lines = (code.textContent || '').replace(/\n$/, '').split('\n');
+    if (numbers.length !== lines.length) continue;
+    const width = gutter.getBoundingClientRect().width;
+    const gutterTop = gutter.getBoundingClientRect().top;
+    const desiredTops: number[] = [];
+    let offset = 0;
+    const contents: Node[] = [];
+    for (let index = 0; index < lines.length; index++) {
+      const range = document.createRange();
+      const from = codeTextPoint(code, offset);
+      const to = codeTextPoint(code, Math.min((code.textContent || '').length, offset + 1));
+      range.setStart(from.node, from.offset); range.setEnd(to.node, to.offset);
+      const top = (range.getClientRects()[0] || range.getBoundingClientRect()).top;
+      desiredTops.push(top);
+      const number = document.createElement('span');
+      number.className = 'code-line-number';
+      number.style.top = `${top - gutterTop}px`;
+      number.textContent = numbers[index];
+      contents.push(number);
+      if (index < lines.length - 1) contents.push(document.createTextNode('\n'));
+      offset += lines[index].length + 1;
+    }
+    gutter.style.width = `${width}px`;
+    gutter.classList.add('positioned');
+    gutter.replaceChildren(...contents);
+    gutter.querySelectorAll<HTMLElement>('.code-line-number').forEach((number, index) => {
+      const range = document.createRange(); range.selectNodeContents(number);
+      const actualTop = (range.getClientRects()[0] || range.getBoundingClientRect()).top;
+      number.style.top = `${parseFloat(number.style.top) + desiredTops[index] - actualTop}px`;
+    });
+  }
+}
 async function paginate(revision: number, rebuild = false) {
   const host = document.getElementById('printHost')!;
   const layoutKey = JSON.stringify([exportSettings, settings.editorFontFamily, frontMatter.raw]);
@@ -2262,6 +2302,7 @@ async function paginate(revision: number, rebuild = false) {
   layoutBlocks = blocks.map(block => block.raw);
   layoutBlockLines = blocks.map(block => block.line);
   layoutSettings = layoutKey;
+  alignPrintCodeGutters(pages);
   reconcileRetainedPages(pages);
   if (mode === 'pdf') syncPdfPageSlots(pages.length);
   markPageBoundaries();
@@ -2768,6 +2809,8 @@ window.addEventListener('message', (event: MessageEvent) => {
     if (mode === 'preview') { lastScrollLine = message.line; scrollToLine(message.line); }
   } else if (message.type === 'cursorPosition') {
     if (Number.isInteger(message.line) && Number.isInteger(message.character)) {
+      if (cursorPosition && (message.line !== cursorPosition.line || message.character !== cursorPosition.character))
+        preserveTaskPreviewPosition = false;
       cursorPosition = { line: message.line, character: message.character };
       if (mode === 'preview' && settings.syncScroll) scrollPreviewCursor();
     }
