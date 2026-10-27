@@ -357,10 +357,8 @@ function parseBlocks(input: string, metadata = parseFrontMatter(input)): Block[]
     html: '<p><br></p>', editable: true, line: 0 });
   return result;
 }
-function resolvedImage(raw: string): Promise<string> {
-  const cached = imageDataCache.get(raw);
-  if (cached) return cached;
-  const request = new Promise<string>((resolve, reject) => {
+function requestImageOnce(raw: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
     const id = `${imageSession}-${++imageRequestSerial}`;
     const timer = window.setTimeout(() => {
       pendingImageRequests.delete(id);
@@ -369,6 +367,20 @@ function resolvedImage(raw: string): Promise<string> {
     pendingImageRequests.set(id, { resolve, reject, timer });
     post('resolveImage', { id, source: raw });
   });
+}
+function resolvedImage(raw: string): Promise<string> {
+  const cached = imageDataCache.get(raw);
+  if (cached) return cached;
+  const request = (async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { return await requestImageOnce(raw); }
+      catch (error) {
+        if (attempt === 2) throw error;
+        await new Promise(resolve => window.setTimeout(resolve, 400 * (attempt + 1)));
+      }
+    }
+    throw new Error('图片读取失败');
+  })();
   imageDataCache.set(raw, request);
   void request.catch(() => { if (imageDataCache.get(raw) === request) imageDataCache.delete(raw); });
   return request;
@@ -379,9 +391,12 @@ async function localizeImages(container: HTMLElement) {
     const raw = img.dataset.originalSrc || img.getAttribute('src') || '';
     if (!raw) return;
     if (!/^(data:|blob:|vscode-)/i.test(raw)) img.dataset.originalSrc = raw;
+    let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
+      let data: string;
+      try { data = /^(data:|blob:|vscode-)/i.test(raw) ? raw : await resolvedImage(raw); }
+      catch (error) { lastError = error; break; }
       try {
-        const data = /^(data:|blob:|vscode-)/i.test(raw) ? raw : await resolvedImage(raw);
         if (!img.isConnected) return;
         img.src = data;
         await img.decode();
@@ -393,17 +408,19 @@ async function localizeImages(container: HTMLElement) {
         return;
       } catch (error) {
         if (!img.isConnected) return;
+        lastError = error;
         imageDataCache.delete(raw);
         if (attempt < 2) {
           await new Promise(resolve => window.setTimeout(resolve, 400 * (attempt + 1)));
           continue;
         }
-        img.removeAttribute('src');
-        img.classList.add('missing-image');
-        img.dataset.renderError = `图片无法加载：${raw}（${error instanceof Error ? error.message : error}）`;
-        toast(img.dataset.renderError, true);
       }
     }
+    if (!img.isConnected) return;
+    img.removeAttribute('src');
+    img.classList.add('missing-image');
+    img.dataset.renderError = `图片无法加载：${raw}（${lastError instanceof Error ? lastError.message : lastError}）`;
+    toast(img.dataset.renderError, true);
   }));
 }
 async function renderMermaid(container: HTMLElement) {
@@ -476,7 +493,7 @@ function toolbar() {
     <button data-action="split" class="${mode === 'preview' ? 'selected' : ''}">分屏</button>
     <button data-action="visual" class="${mode === 'visual' ? 'selected' : ''}">预览编辑</button>
     <button data-action="pdf" class="${mode === 'pdf' ? 'selected' : ''}">PDF 预览</button>
-  </div><div class="toolbar-group visual-tools" style="display:${mode === 'visual' ? 'flex' : 'none'}">
+  </div>${mode === 'preview' ? `<div class="toolbar-group"><button data-action="breakMarkers" aria-pressed="${showBreaks}">${showBreaks ? '隐藏分页标记' : '显示分页标记'}</button></div>` : ''}<div class="toolbar-group visual-tools" style="display:${mode === 'visual' ? 'flex' : 'none'}">
     <select id="blockType" aria-label="段落类型"><option value="p">正文</option>${[1,2,3,4,5,6].map(n => `<option value="h${n}">标题 ${n}</option>`).join('')}</select>
     <button data-action="bold" title="加粗 Ctrl+B"><b>B</b></button><button data-action="italic" title="斜体 Ctrl+I"><i>I</i></button>
     <button data-action="strike" title="删除线"><s>S</s></button><button data-action="link">链接</button>
@@ -586,7 +603,9 @@ function scrollToLine(line: number) {
   const nodes = [...document.querySelectorAll<HTMLElement>('#documentBody .md-block')];
   const node = nodes.findLast(n => Number(n.dataset.line) <= line) || nodes[0];
   if (!node) return;
-  const offset = node.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop;
+  const paneRect = pane.getBoundingClientRect(), nodeRect = node.getBoundingClientRect();
+  if (nodeRect.top >= paneRect.top + 2 && nodeRect.bottom <= paneRect.bottom - 2) return;
+  const offset = nodeRect.top - paneRect.top + pane.scrollTop;
   const target = Math.max(0, Math.min(offset, pane.scrollHeight - pane.clientHeight));
   if (Math.abs(pane.scrollTop - target) < 2) return;
   suppressScrollUntil = Date.now() + 350;
@@ -1189,7 +1208,7 @@ function applySource(newSource: string, newVersion: number, own = false) {
         if (blocks[i]) element.dataset.line = String(blocks[i].line);
       });
       pendingEdit = null;
-      if (mode === 'pdf') schedulePdf();
+      if (mode === 'pdf' || mode === 'preview') schedulePdf();
       return;
     }
     const explicitCaret = pendingEdit.focusIndex !== undefined;
@@ -1203,12 +1222,12 @@ function applySource(newSource: string, newVersion: number, own = false) {
       addedBlocks > 0 ? index + Math.min(caret?.childIndex || 0, addedBlocks) : index;
     renderDocument();
     restoreBlockCaret(caret, Math.min(caretBlock, blocks.length - 1));
-    if (mode === 'pdf') schedulePdf();
+    if (mode === 'pdf' || mode === 'preview') schedulePdf();
     return;
   }
   pendingEdit = null;
   renderDocument();
-  if (mode === 'pdf') schedulePdf();
+  if (mode === 'pdf' || mode === 'preview') schedulePdf();
 }
 function captureBlockCaret(block: HTMLElement) {
   const selection = window.getSelection();
@@ -2244,7 +2263,7 @@ async function paginate(revision: number, rebuild = false) {
   layoutBlockLines = blocks.map(block => block.line);
   layoutSettings = layoutKey;
   reconcileRetainedPages(pages);
-  syncPdfPageSlots(pages.length);
+  if (mode === 'pdf') syncPdfPageSlots(pages.length);
   markPageBoundaries();
   post('pageBoundaries', { boundaries: showBreaks ? boundaries : [] });
   return pages;
@@ -2339,6 +2358,7 @@ function markPageBoundaries() {
   if (!showBreaks) return;
   const blockElements = [...document.querySelectorAll<HTMLElement>('#documentBody .md-block')];
   for (const boundary of pageBoundaries) {
+    if (mode === 'preview' && boundary.type === 'manual') continue;
     const target = blockElements.find(el => Number(el.dataset.line) >= boundary.line) || blockElements.at(-1);
     if (!target) continue;
     const marker = document.createElement('div');
@@ -2348,15 +2368,15 @@ function markPageBoundaries() {
   }
 }
 function schedulePdf(rebuild = false, generateNow = false) {
-  if (!(mode === 'pdf' || rebuild || generateNow || autoExport)) return;
+  const previewOnly = mode === 'preview' && !rebuild && !generateNow && !autoExport;
+  if (!(mode === 'pdf' || previewOnly || rebuild || generateNow || autoExport)) return;
   const revision = ++pdfRevision;
-  pdfDirty = true;
-  pdfBytes = null;
+  if (!previewOnly) { pdfDirty = true; pdfBytes = null; }
   const status = document.getElementById('pdfStatus');
   if (status && mode === 'pdf') status.textContent = '正在分页…';
-  discardPdfPagesFrom(affectedPdfPage(rebuild));
+  if (!previewOnly) discardPdfPagesFrom(affectedPdfPage(rebuild));
   if (mode === 'pdf' && !document.querySelector('#pdfPages .pdf-page-slot')) syncPdfPageSlots(1);
-  retainedPageGeometry = layoutPages.slice(0, pdfPreviewImages.length).map(pageGeometry);
+  if (!previewOnly) retainedPageGeometry = layoutPages.slice(0, pdfPreviewImages.length).map(pageGeometry);
   window.clearTimeout(layoutTimer);
   resolveLayout?.([]);
   resolveLayout = null;
@@ -2382,7 +2402,7 @@ function schedulePdf(rebuild = false, generateNow = false) {
       });
     }, rebuild || generateNow ? 0 : 80);
   });
-  if (autoUpdate || rebuild || generateNow || autoExport)
+  if (!previewOnly && (autoUpdate || rebuild || generateNow || autoExport))
     pdfTimer = window.setTimeout(() => void generatePdf(), rebuild || generateNow ? 0 : 80);
 }
 function discardPdfPagesFrom(index: number) {
@@ -2686,6 +2706,7 @@ window.addEventListener('message', (event: MessageEvent) => {
     cursorPosition = message.cursor && Number.isInteger(message.cursor.line) && Number.isInteger(message.cursor.character) ? message.cursor : null;
     source = message.source; version = message.version; pdfDirty = true; renderDocument(false);
     if (mode === 'pdf' || autoExport) schedulePdf(true);
+    else if (mode === 'preview') schedulePdf();
   } else if (message.type === 'documentChanged') {
     if (message.cursor && Number.isInteger(message.cursor.line) && Number.isInteger(message.cursor.character))
       cursorPosition = message.cursor;

@@ -1737,6 +1737,42 @@ test('PDF controls show marker state without an editing pane', async () => {
   await page.close();
 });
 
+test('split preview toggles manual and automatic page markers together', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const paragraphs = start => Array.from({ length: 35 }, (_, i) => `第 ${start + i} 段。${'分页内容'.repeat(18)}`).join('\n\n');
+  const source = `${paragraphs(1)}\n\n<!-- pagebreak -->\n\n${paragraphs(36)}\n`;
+  await deliver(page, { type: 'document', source, version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
+  await page.waitForFunction(() => document.querySelector('#documentBody .page-boundary.automatic') &&
+    window.__MDC_MESSAGES__.some(m => m.type === 'pageBoundaries' &&
+      m.boundaries.some(b => b.type === 'manual') && m.boundaries.some(b => b.type === 'automatic')),
+  { timeout: 15000 });
+  const button = page.locator('.toolbar button[data-action=breakMarkers]');
+  assert.equal(await button.count(), 1);
+  assert.equal(await button.getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#documentBody .manual-break').count(), 1);
+  assert.equal(await page.locator('#documentBody .manual-break').isVisible(), true);
+  assert.ok(await page.locator('#documentBody .page-boundary.automatic').count() > 0);
+  assert.ok(await page.locator('#documentBody .page-boundary.automatic').first().evaluate(marker => {
+    const range = document.createRange(); range.selectNodeContents(marker);
+    return [...range.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+  }));
+  assert.equal(await page.locator('#pdfPages canvas').count(), 0);
+
+  await button.click();
+  assert.equal(await button.getAttribute('aria-pressed'), 'false');
+  assert.equal(await page.locator('#documentBody .manual-break').isVisible(), false);
+  assert.equal(await page.locator('#documentBody .page-boundary').count(), 0);
+  assert.deepEqual(await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'pageBoundaries').at(-1).boundaries), []);
+
+  await button.click();
+  assert.equal(await button.getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#documentBody .manual-break').isVisible(), true);
+  assert.ok(await page.locator('#documentBody .page-boundary.automatic').count() > 0);
+  await page.close();
+});
+
 test('visual link and image dialogs write safe Markdown targets', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=visual');
