@@ -1437,7 +1437,7 @@ test('PDF preserves the complete sum formula and Mermaid labels from the demo do
   await page.close();
 });
 
-test('task checkbox is editable only in visual mode', async () => {
+test('task checkboxes write back in visual and split preview modes', async () => {
   const visual = await browser.newPage();
   await visual.goto(base + '/?mode=visual');
   await visual.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
@@ -1453,9 +1453,32 @@ test('task checkbox is editable only in visual mode', async () => {
   const preview = await browser.newPage();
   await preview.goto(base + '/?mode=preview');
   await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
-  await deliver(preview, { type: 'document', source: '- [ ] 待办\n', version: 1, settings: {}, exportSettings: {}, templates: [] });
-  assert.equal(await preview.locator('#documentBody input[type=checkbox]').isDisabled(), true);
+  let source = ['# 任务', '', '- [ ] 重复', '- [x] 重复', '  - [ ] 子项', '',
+    '```md', '- [ ] 代码示例', '```', '', '> - [ ] 引用'].join('\r\n') + '\r\n';
+  let version = 1, editCount = 0;
+  await deliver(preview, { type: 'document', source, version, settings: {}, exportSettings: {}, templates: [] });
+  const previewTasks = preview.locator('#documentBody input.task-list-item-checkbox');
+  assert.equal(await previewTasks.count(), 4);
+  assert.equal(await previewTasks.first().isDisabled(), false);
   assert.equal(await preview.locator('#documentBody [contenteditable]').count(), 0);
+  for (const [index, checked] of [[0, true], [1, false], [2, true], [3, true]]) {
+    if (checked) await previewTasks.nth(index).check();
+    else await previewTasks.nth(index).uncheck();
+    await preview.waitForFunction(count => window.__MDC_MESSAGES__.filter(message => message.type === 'edit').length > count,
+      editCount, { timeout: 5000 });
+    const edit = await preview.evaluate(() => window.__MDC_MESSAGES__.filter(message => message.type === 'edit').at(-1));
+    assert.equal(edit.end - edit.start, 1);
+    assert.equal(source.slice(edit.start, edit.end), edit.expected);
+    source = source.slice(0, edit.start) + edit.replacement + source.slice(edit.end);
+    version++;
+    await deliver(preview, { type: 'documentChanged', source, version });
+    await deliver(preview, { type: 'editAck', id: edit.id, source, version });
+    editCount++;
+  }
+  await preview.waitForTimeout(180);
+  assert.equal(await preview.evaluate(() => window.__MDC_MESSAGES__.filter(message => message.type === 'edit').length), 4);
+  assert.equal(source, ['# 任务', '', '- [x] 重复', '- [ ] 重复', '  - [x] 子项', '',
+    '```md', '- [ ] 代码示例', '```', '', '> - [x] 引用'].join('\r\n') + '\r\n');
   await preview.close();
 });
 

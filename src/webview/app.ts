@@ -535,6 +535,7 @@ function renderDocument(preserve = true) {
   if (tagsToggle) tagsToggle.checked = exportSettings.showTags;
   body.querySelectorAll<HTMLElement>('.math-inline').forEach(math => math.contentEditable = 'false');
   if (mode === 'visual') body.querySelectorAll<HTMLInputElement>('input[type=checkbox]').forEach(input => input.disabled = false);
+  else if (mode === 'preview') body.querySelectorAll<HTMLInputElement>('input.task-list-item-checkbox').forEach(input => input.disabled = false);
   document.documentElement.style.setProperty('--editor-font', settings.fontFamily || 'system-ui, sans-serif');
   document.documentElement.style.setProperty('--editor-size', `${settings.fontSize || 16}px`);
   document.documentElement.style.setProperty('--editor-line', String(settings.lineHeight || 1.6));
@@ -685,6 +686,7 @@ function onFocus(event: FocusEvent) {
 }
 function onInput(event: Event) {
   const target = event.target as HTMLElement;
+  if (target.matches('input[type=checkbox]')) return;
   if (target.id === 'templateImportName' && templateImportDraft) templateImportDraft.name = (target as HTMLInputElement).value;
   if (['set-coverSubtitle', 'set-coverAuthor', 'set-coverDateText'].includes(target.id)) updateCoverSheet();
   const block = target.closest('.md-block') as HTMLElement | null;
@@ -1449,6 +1451,10 @@ function templateOptions(paper = exportSettings.paper, orientation = exportSetti
 }
 function onChange(event: Event) {
   const target = event.target as HTMLInputElement;
+  if (mode === 'preview' && target.matches('input.task-list-item-checkbox')) {
+    togglePreviewTask(target);
+    return;
+  }
   if (target.id === 'set-paper' || target.id === 'set-orientation' || target.name === 'template' || target.id === 'set-pageNumbers') {
     if (target.id === 'set-paper' || target.id === 'set-orientation' || target.name === 'template') updateVariantSelectors();
     updateMarginSheet(); updateCoverSheet();
@@ -1479,6 +1485,31 @@ function onChange(event: Event) {
     }
   }
   if (target.matches('input[type=checkbox]') && target.closest('.md-block')) scheduleBlockSave(target.closest('.md-block') as HTMLElement);
+}
+function togglePreviewTask(input: HTMLInputElement) {
+  const element = input.closest<HTMLElement>('.md-block');
+  const block = element && blocks[Number(element.dataset.index)];
+  if (!element || !block) { input.checked = !input.checked; return; }
+  const ordinal = [...element.querySelectorAll<HTMLInputElement>('input.task-list-item-checkbox')].indexOf(input);
+  const tasks = md.parse(block.raw, {}).filter(token => token.type === 'list_item_open' &&
+    token.attrGet('class')?.split(/\s+/).includes('task-list-item'));
+  const line = tasks[ordinal]?.map?.[0];
+  const offsets = sourceOffsets(block.raw);
+  const lineStart = line === undefined ? -1 : offsets[line];
+  const lineEnd = line === undefined ? -1 : offsets[line + 1] ?? block.raw.length;
+  const rawLine = lineStart >= 0 ? block.raw.slice(lineStart, lineEnd) : '';
+  const marker = rawLine.match(/^((?:[ \t]*>[ \t]*)*[ \t]*(?:[-+*]|\d+[.)])[ \t]+)\[([ xX])\]/);
+  if (!marker) {
+    input.checked = !input.checked;
+    toast('无法定位任务标记，请在源码中修改', true);
+    return;
+  }
+  const start = block.start + lineStart + marker[1].length + 1;
+  const expected = source.slice(start, start + 1);
+  const replacement = input.checked ? 'x' : ' ';
+  if (!/[ xX]/.test(expected) || expected === replacement) return;
+  input.disabled = true;
+  submitEdit(start, start + 1, expected, replacement);
 }
 function onClick(event: MouseEvent) {
   const clickedBlock = (event.target as HTMLElement).closest('.md-block') as HTMLElement | null;
