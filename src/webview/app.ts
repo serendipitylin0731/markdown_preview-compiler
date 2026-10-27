@@ -93,6 +93,38 @@ md.renderer.rules.math_block = (tokens, i) => {
   try { return `<div class="math-block">${katex.renderToString(tokens[i].content, { displayMode: true, throwOnError: false, trust: false, output: 'html' })}</div>`; }
   catch { return '<div class="render-error">公式无法渲染</div>'; }
 };
+md.block.ruler.before('fence', 'admonition', (state, start, end, silent) => {
+  const opening = state.src.slice(state.bMarks[start] + state.tShift[start], state.eMarks[start]).trim();
+  const match = opening.match(/^:::([a-z][\w-]*)(?:\[([^\]]*)\])?$/i);
+  if (!match) return false;
+  let depth = 1, close = -1, fence = '';
+  for (let line = start + 1; line < end; line++) {
+    const value = state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]).trim();
+    const marker = value.match(/^(`{3,}|~{3,})/);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = '';
+      continue;
+    }
+    if (marker) { fence = marker[1]; continue; }
+    if (/^:::[a-z][\w-]*(?:\[[^\]]*\])?$/i.test(value)) depth++;
+    else if (/^:::$/.test(value) && --depth === 0) { close = line; break; }
+  }
+  if (close < 0) return false;
+  if (!silent) {
+    const token = state.push('admonition', 'details', 0);
+    token.meta = { kind: match[1].toLowerCase(), title: match[2]?.trim() || '' };
+    token.content = state.getLines(start + 1, close, state.blkIndent, false);
+    token.map = [start, close + 1];
+  }
+  state.line = close + 1;
+  return true;
+});
+md.renderer.rules.admonition = (tokens, i) => {
+  const { kind, title } = tokens[i].meta;
+  const labels: Record<string, string> = { info: '信息', note: '备注', tip: '提示', warning: '警告', danger: '危险',
+    success: '成功', question: '问题', example: '示例', abstract: '摘要', important: '重要', caution: '注意' };
+  return `<details class="admonition admonition-${kind}"><summary>${esc(title || labels[kind] || kind)}</summary>${md.render(tokens[i].content)}</details>`;
+};
 const originalFence = md.renderer.rules.fence;
 md.renderer.rules.fence = (tokens, i, options, env, self) => {
   if (tokens[i].info.trim().toLowerCase() === 'mermaid') {
@@ -121,6 +153,7 @@ turndown.addRule('math', {
 });
 
 type Block = { start: number; end: number; raw: string; html: string; editable: boolean; line: number };
+type FrontMatter = { raw: string; bodyOffset: number; bodyLine: number; tags: string[] };
 let source = '';
 let version = 0;
 let mode = boot.mode;
@@ -128,7 +161,7 @@ let settings: any = {};
 const defaultExportSettings: any = {
   paper: 'a4', orientation: 'portrait', marginTop: 24, marginRight: 22, marginBottom: 24, marginLeft: 22,
   fontSize: 11, lineHeight: 1.5, paragraphGap: 8, template: 'simple', cover: false, toc: false,
-  header: '', footer: '', pageNumbers: true, firstLineIndent: 0, align: 'left',
+  header: '', footer: '', pageNumbers: true, showTags: true, firstLineIndent: 0, align: 'left',
   fontFamily: '', titleFontFamily: '', headingScale: 1,
   headingGap: 1, pageNumberFormat: 'number',
   codeBackground: '#f4f6f8', tableHeaderBackground: '#eef2f6', tableBorderColor: '#aab4bf',
@@ -138,6 +171,7 @@ const defaultExportSettings: any = {
 let exportSettings: any = structuredClone(defaultExportSettings);
 function normalizeExportSettings() {
   exportSettings.pageNumberFormat = 'number';
+  exportSettings.showTags = exportSettings.showTags !== false;
   const ranges: any = {
     marginTop: [0, 60], marginRight: [0, 60], marginBottom: [18, 60], marginLeft: [0, 60],
     fontSize: [6, 36], lineHeight: [1, 3], paragraphGap: [0, 50],
@@ -151,6 +185,7 @@ function normalizeExportSettings() {
 let templates: any[] = [];
 let templateImportDraft: { name: string; slots: Record<string, { name: string; url: string }> } | null = null;
 let blocks: Block[] = [];
+let frontMatter: FrontMatter = { raw: '', bodyOffset: 0, bodyLine: 0, tags: [] };
 let pendingEdit: any = null;
 let editTimer: number | undefined;
 let scheduledBlock: HTMLElement | null = null;
@@ -165,6 +200,7 @@ let renderedPageRefs: HTMLElement[] = [];
 let pdfObserver: IntersectionObserver | null = null;
 let pdfRenderToken = 0;
 let pdfPage = 1;
+let pdfCursorTarget: { pageIndex: number; fraction: number } | null = null;
 let pdfScale = 1;
 let pdfBusy = false;
 let pdfQueued = false;
@@ -177,6 +213,7 @@ let layoutPages: HTMLElement[] = [];
 let layoutBlocks: string[] = [];
 let layoutBlockLines: number[] = [];
 let layoutSettings = '';
+let layoutRevision = -1;
 let retainedPageGeometry: string[] = [];
 const imageSession = Date.now().toString(36) + Math.random().toString(36).slice(2);
 let imageRequestSerial = 0;
@@ -187,6 +224,7 @@ let autoUpdate = true;
 let showBreaks = true;
 let pageBoundaries: Array<{ line: number; page: number; type: string }> = [];
 let lastScrollLine = 0;
+let cursorPosition: { line: number; character: number } | null = null;
 let suppressScrollUntil = 0;
 let lastSentScrollLine = -1;
 let marginDraft: any = null;
@@ -221,6 +259,22 @@ function sourceOffsets(input: string) {
   offsets.push(input.length);
   return offsets;
 }
+function parseFrontMatter(input: string): FrontMatter {
+  const lines = input.split('\n');
+  if (!/^\uFEFF?---[ \t]*\r?$/.test(lines[0] || ''))
+    return { raw: '', bodyOffset: 0, bodyLine: 0, tags: [] };
+  const closing = lines.findIndex((line, index) => index > 0 && /^---[ \t]*\r?$/.test(line));
+  if (closing < 0) return { raw: '', bodyOffset: 0, bodyLine: 0, tags: [] };
+  const bodyOffset = sourceOffsets(input)[closing + 1] ?? input.length;
+  const tags = lines.slice(1, closing).flatMap(line => {
+    const match = line.match(/^tags?:[ \t]*(.*)\r?$/i);
+    return match ? match[1].split(',').map(tag => tag.trim()).filter(Boolean) : [];
+  });
+  return { raw: input.slice(0, bodyOffset), bodyOffset, bodyLine: closing + 1, tags };
+}
+function tagMarkup(tags: string[]) {
+  return tags.length ? `<div class="document-tags" aria-label="标签">${tags.map(tag => `<span class="document-tag">${esc(tag)}</span>`).join('')}</div>` : '';
+}
 const htmlContainers = new Set(['details', 'div', 'section', 'article', 'aside', 'figure', 'figcaption',
   'blockquote', 'table', 'thead', 'tbody', 'tfoot', 'ul', 'ol', 'dl']);
 function htmlContainerBalance(content: string, stack: string[]) {
@@ -234,15 +288,17 @@ function htmlContainerBalance(content: string, stack: string[]) {
     } else if (!match[0].endsWith('/>')) stack.push(tag);
   }
 }
-function parseBlocks(input: string): Block[] {
+function parseBlocks(input: string, metadata = parseFrontMatter(input)): Block[] {
   const offsets = sourceOffsets(input);
   const env = {};
-  const tokens = md.parse(input, env);
+  const body = input.slice(metadata.bodyOffset);
+  const tokens = md.parse(body, env);
   const spans: Array<{ start: number; end: number; index: number }> = [];
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
     if (token.level !== 0 || !token.map) continue;
-    const [start, end] = token.map;
+    const [relativeStart, relativeEnd] = token.map;
+    const start = relativeStart + metadata.bodyLine, end = relativeEnd + metadata.bodyLine;
     if (end <= start) continue;
     if (spans.some(span => start >= span.start && end <= span.end)) continue;
     spans.push({ start, end, index });
@@ -266,20 +322,21 @@ function parseBlocks(input: string): Block[] {
     const start = offsets[line] ?? input.length;
     const end = offsets[endLine] ?? input.length;
     const raw = input.slice(start, end);
-    let protectedBlock = /^\s*(?:`{3,}|~{3,}|\$\$|<!--|<[^!]|\[[^\]]+\]:)/.test(raw) || /<[^>]+>/.test(raw);
-    const kind = /^\s*(`{3,}|~{3,})/.test(raw) && !/^\s*(`{3,}|~{3,})\s*mermaid\b/i.test(raw) ? 'code' : /^\s*\$\$/.test(raw) ? 'math' : '';
-    if (kind) protectedBlock = false;
+    let protectedBlock = /^\s*(?:`{3,}|~{3,}|\$\$|<!--|<[^!]|\[[^\]]+\]:|:::[a-z])/i.test(raw) || /<[^>]+>/.test(raw);
+    const kind = /^\s*(`{3,}|~{3,})/.test(raw) && !/^\s*(`{3,}|~{3,})\s*mermaid\b/i.test(raw) ? 'code' :
+      /^\s*\$\$/.test(raw) ? 'math' : /^\s*:::[a-z][\w-]*(?:\[[^\]]*\])?\s*$/im.test(raw.split('\n')[0]) ? 'admonition' : '';
+    if (kind === 'code' || kind === 'math') protectedBlock = false;
     const next = merged[i + 1]?.index ?? tokens.length;
     let html = md.renderer.render(tokens.slice(index, next), md.options, env);
-    if (/^\s*(:::|!!!)\s*\w+/m.test(raw)) {
+    if (kind !== 'admonition' && /^\s*(:::|!!!)\s*\w+/m.test(raw)) {
       protectedBlock = true;
       html = '<div class="render-warning">该扩展指令暂不支持可视化渲染，请使用源码编辑。</div>' + html;
     }
     if (html.includes('class="footnotes"')) protectedBlock = true;
     result.push({ start, end, raw, html: DOMPurify.sanitize(html), editable: !protectedBlock, line, kind });
   }
-  if (!result.length && input.trim()) result.push({ start: 0, end: input.length, raw: input,
-    html: DOMPurify.sanitize(md.render(input)), editable: false, line: 0 });
+  if (!result.length && body.trim()) result.push({ start: metadata.bodyOffset, end: input.length, raw: body,
+    html: DOMPurify.sanitize(md.render(body)), editable: false, line: metadata.bodyLine });
   if (!result.length && !input.trim()) result.push({ start: 0, end: input.length, raw: input,
     html: '<p><br></p>', editable: true, line: 0 });
   return result;
@@ -410,6 +467,7 @@ function toolbar() {
 function pdfControls() {
   return `<div class="pdf-controls"><button data-action="refresh">更新 PDF</button>
     <label><input type="checkbox" id="autoUpdate" ${autoUpdate ? 'checked' : ''}>自动更新</label>
+    <label id="pdfTagsLabel" hidden><input type="checkbox" id="pdfTags" ${exportSettings.showTags ? 'checked' : ''}>显示标签</label>
     <button data-action="prev">‹</button><span id="pageInfo">0 / 0</span><button data-action="next">›</button>
     <button data-action="zoomOut">−</button><span id="zoomLabel">100%</span><button data-action="zoomIn">+</button>
     <button data-action="breakMarkers" aria-pressed="${showBreaks}">${showBreaks ? '隐藏分页标记' : '显示分页标记'}</button>
@@ -443,7 +501,20 @@ function buildShell() {
   pdfPages?.addEventListener('scroll', () => {
     const slots = [...pdfPages.querySelectorAll<HTMLElement>('.pdf-page-slot')];
     if (slots.length) {
-      const top = pdfPages.getBoundingClientRect().top + 80;
+      const viewport = pdfPages.getBoundingClientRect();
+      const top = viewport.top + 80;
+      if (pdfCursorTarget) {
+        const targetSlot = slots[pdfCursorTarget.pageIndex];
+        if (targetSlot) {
+          const rect = targetSlot.getBoundingClientRect();
+          const y = rect.top + pdfCursorTarget.fraction * rect.height;
+          if (y >= viewport.top + 20 && y <= viewport.bottom - 20) {
+            pdfPage = pdfCursorTarget.pageIndex + 1;
+            updatePageInfo();
+            return;
+          }
+        }
+      }
       const nearest = slots.findIndex(slot => slot.getBoundingClientRect().bottom > top);
       if (nearest >= 0) { pdfPage = nearest + 1; updatePageInfo(); }
     }
@@ -452,21 +523,47 @@ function buildShell() {
 function renderDocument(preserve = true) {
   const pane = document.querySelector<HTMLElement>('.document-scroll');
   const previous = preserve ? pane?.scrollTop || 0 : 0;
-  blocks = parseBlocks(source);
   const body = document.getElementById('documentBody')!;
-  body.innerHTML = blocks.map((block, i) => blockMarkup(block, i, mode === 'visual')).join('') || '<div class="empty">开始编写 Markdown…</div>';
+  const openDetails = new Map<string, boolean[]>();
+  const previousDetails = [...body.querySelectorAll<HTMLDetailsElement>('details')];
+  previousDetails.forEach(details => {
+    const key = details.querySelector(':scope > summary')?.textContent?.trim() || '';
+    const states = openDetails.get(key) || [];
+    states.push(details.open); openDetails.set(key, states);
+  });
+  frontMatter = parseFrontMatter(source);
+  blocks = parseBlocks(source, frontMatter);
+  body.innerHTML = tagMarkup(frontMatter.tags) + blocks.map((block, i) => blockMarkup(block, i, mode === 'visual')).join('') ||
+    (frontMatter.raw ? '' : '<div class="empty">开始编写 Markdown…</div>');
+  const nextDetails = [...body.querySelectorAll<HTMLDetailsElement>('details')];
+  nextDetails.forEach((details, index) => {
+    const key = details.querySelector(':scope > summary')?.textContent?.trim() || '';
+    const states = openDetails.get(key);
+    if (states?.length) details.open = states.shift()!;
+    else if (nextDetails.length === previousDetails.length) details.open = previousDetails[index].open;
+  });
+  const tagsLabel = document.getElementById('pdfTagsLabel');
+  if (tagsLabel) tagsLabel.hidden = !frontMatter.tags.length;
+  const tagsToggle = document.getElementById('pdfTags') as HTMLInputElement | null;
+  if (tagsToggle) tagsToggle.checked = exportSettings.showTags;
   body.querySelectorAll<HTMLElement>('.math-inline').forEach(math => math.contentEditable = 'false');
   if (mode === 'visual') body.querySelectorAll<HTMLInputElement>('input[type=checkbox]').forEach(input => input.disabled = false);
-  void localizeImages(body);
-  void renderMermaid(body);
-  if (pane) pane.scrollTop = previous;
-  if (mode === 'preview' && lastScrollLine && settings.syncScroll) scrollToLine(lastScrollLine);
-  if (mode === 'pdf') document.getElementById('documentPane')!.style.display = 'none';
   document.documentElement.style.setProperty('--editor-font', settings.fontFamily || 'system-ui, sans-serif');
   document.documentElement.style.setProperty('--editor-size', `${settings.fontSize || 16}px`);
   document.documentElement.style.setProperty('--editor-line', String(settings.lineHeight || 1.6));
   document.documentElement.style.setProperty('--editor-paragraph-gap', `${settings.paragraphGap ?? 10}px`);
   document.documentElement.style.setProperty('--editor-width', `${settings.maxWidth || 860}px`);
+  const renderedSource = source;
+  const resync = () => { if (source === renderedSource && mode === 'preview' && settings.syncScroll) scrollPreviewCursor(); };
+  void localizeImages(body).then(resync);
+  void renderMermaid(body).then(resync);
+  void document.fonts.ready.then(resync);
+  if (pane) pane.scrollTop = previous;
+  if (mode === 'preview' && settings.syncScroll) {
+    if (cursorPosition) scrollPreviewCursor();
+    else if (lastScrollLine) scrollToLine(lastScrollLine);
+  }
+  if (mode === 'pdf') document.getElementById('documentPane')!.style.display = 'none';
 }
 function scrollToLine(line: number) {
   const pane = document.querySelector<HTMLElement>('.document-scroll');
@@ -479,6 +576,101 @@ function scrollToLine(line: number) {
   if (Math.abs(pane.scrollTop - target) < 2) return;
   suppressScrollUntil = Date.now() + 350;
   pane.scrollTop = target;
+}
+function cursorBlock() {
+  if (!cursorPosition || !blocks.length) return null;
+  const offsets = sourceOffsets(source);
+  const line = Math.max(0, Math.min(offsets.length - 2, cursorPosition.line));
+  const offset = Math.min(source.length, offsets[line] + Math.max(0, cursorPosition.character));
+  let index = blocks.findIndex(block => offset >= block.start && offset < block.end);
+  if (index < 0) {
+    const next = blocks.findIndex(block => block.start > offset);
+    if (next === 0) index = 0;
+    else if (next < 0) index = blocks.length - 1;
+    else index = offset - blocks[next - 1].end <= blocks[next].start - offset ? next - 1 : next;
+  }
+  return { block: blocks[index], index, offset, line };
+}
+function imageIndexAtCursor(block: Block, offset: number) {
+  const relative = offset - block.start;
+  return [...block.raw.matchAll(/!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>/gi)]
+    .findIndex(match => relative >= (match.index || 0) && relative <= (match.index || 0) + match[0].length);
+}
+function inlineMathIndexAtCursor(block: Block, offset: number) {
+  const relative = offset - block.start;
+  return [...block.raw.matchAll(/(?<!\\)\$[^$\n]+\$/g)]
+    .findIndex(match => relative >= (match.index || 0) && relative <= (match.index || 0) + match[0].length);
+}
+function plainSourceText(raw: string) {
+  return raw.replace(/<[^>]*>/g, '').replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[`*_~#=]/g, '').replace(/\r/g, '');
+}
+function closestTextMatch(text: string, needle: string, expected: number, atEnd: boolean) {
+  let best = -1, distance = Infinity;
+  for (let index = text.indexOf(needle); index >= 0; index = text.indexOf(needle, index + 1)) {
+    const position = index + (atEnd ? needle.length : 0);
+    if (Math.abs(position - expected) < distance) { best = position; distance = Math.abs(position - expected); }
+  }
+  return best;
+}
+function cursorTextOffset(block: Block, text: string, offset: number) {
+  if (!text) return 0;
+  const relative = Math.max(0, Math.min(block.raw.length, offset - block.start));
+  const expected = Math.round(relative / Math.max(1, block.raw.length) * text.length);
+  const lineStart = Math.max(block.start, source.lastIndexOf('\n', Math.max(0, offset - 1)) + 1);
+  const lineEnd = Math.min(block.end, source.indexOf('\n', offset) < 0 ? block.end : source.indexOf('\n', offset));
+  const before = plainSourceText(source.slice(lineStart, offset)).trimEnd();
+  for (let length = Math.min(24, before.length); length >= 3; length--) {
+    const found = closestTextMatch(text, before.slice(-length), expected, true);
+    if (found >= 0) return found;
+  }
+  const after = plainSourceText(source.slice(offset, lineEnd)).trimStart();
+  for (let length = Math.min(24, after.length); length >= 3; length--) {
+    const found = closestTextMatch(text, after.slice(0, length), expected, false);
+    if (found >= 0) return found;
+  }
+  return Math.max(0, Math.min(text.length, expected));
+}
+function textRectAt(element: HTMLElement, offset: number): DOMRect | null {
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  let remaining = Math.max(0, offset);
+  let last: Text | null = null;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const length = node.length;
+    if (!length) continue;
+    last = node;
+    if (remaining >= length) { remaining -= length; continue; }
+    const range = document.createRange();
+    range.setStart(node, remaining); range.setEnd(node, Math.min(length, remaining + 1));
+    return range.getClientRects()[0] || null;
+  }
+  if (!last) return null;
+  const range = document.createRange();
+  range.setStart(last, Math.max(0, last.length - 1)); range.setEnd(last, last.length);
+  return range.getClientRects()[0] || null;
+}
+function scrollPreviewCursor() {
+  const pane = document.querySelector<HTMLElement>('.document-scroll');
+  if (!pane || !cursorPosition) return;
+  const found = cursorBlock();
+  const inMetadata = !!frontMatter.raw && cursorPosition.line < frontMatter.bodyLine;
+  const content = inMetadata ? document.querySelector<HTMLElement>('#documentBody .document-tags') ||
+    document.querySelector<HTMLElement>('#documentBody .md-block .block-content') : found ?
+    document.querySelector<HTMLElement>(`#documentBody .md-block[data-index="${found.index}"] .block-content`) : null;
+  if (!content) return;
+  const imageIndex = found && !inMetadata ? imageIndexAtCursor(found.block, found.offset) : -1;
+  const mathIndex = found && !inMetadata ? inlineMathIndexAtCursor(found.block, found.offset) : -1;
+  const special = found && !inMetadata && (/^\s*\$\$/.test(found.block.raw) ? content.querySelector<HTMLElement>('.math-block') :
+    imageIndex >= 0 ? content.querySelectorAll<HTMLElement>('img')[imageIndex] :
+    mathIndex >= 0 ? content.querySelectorAll<HTMLElement>('.math-inline')[mathIndex] : null);
+  const target = special?.getBoundingClientRect() ||
+    (found && !inMetadata ? textRectAt(content, cursorTextOffset(found.block, content.textContent || '', found.offset)) : null) ||
+    content.getBoundingClientRect();
+  const paneRect = pane.getBoundingClientRect();
+  if (target.top >= paneRect.top + 24 && target.bottom <= paneRect.bottom - 24) return;
+  const top = pane.scrollTop + target.top - paneRect.top - pane.clientHeight * .4;
+  pane.scrollTop = Math.max(0, Math.min(top, pane.scrollHeight - pane.clientHeight));
 }
 function onDocumentScroll() {
   if (mode !== 'preview' || !settings.syncScroll || Date.now() < suppressScrollUntil) return;
@@ -1285,6 +1477,11 @@ function onChange(event: Event) {
   if (target.id === 'autoUpdate') {
     autoUpdate = target.checked; if (autoUpdate) schedulePdf();
   }
+  if (target.id === 'pdfTags') {
+    exportSettings.showTags = target.checked;
+    post('saveSettings', { value: exportSettings });
+    schedulePdf(true);
+  }
   if (target.id === 'blockType') {
     const block = document.querySelector<HTMLElement>(`#documentBody .md-block[data-index="${activeBlock}"]`);
     const current = block?.querySelector<HTMLElement>('.block-content > :first-child');
@@ -1698,10 +1895,12 @@ function textLineBottoms(element: HTMLElement): number[] {
 }
 async function paginate(revision: number, rebuild = false) {
   const host = document.getElementById('printHost')!;
-  const layoutKey = JSON.stringify([exportSettings, settings.editorFontFamily]);
+  const layoutKey = JSON.stringify([exportSettings, settings.editorFontFamily, frontMatter.raw]);
   const firstChanged = firstChangedBlock();
   if (!rebuild && layoutSettings === layoutKey && layoutPages.length && layoutPages.every(page => page.isConnected)) {
     if (firstChanged < 0) {
+      layoutRevision = revision;
+      syncPdfCursor();
       markPageBoundaries();
       return layoutPages;
     }
@@ -1747,6 +1946,7 @@ async function paginate(revision: number, rebuild = false) {
     page = makePage(pages.length + 1, 0, false, currentTemplate); host.append(page); pages.push(page);
   }
   let content = page.querySelector<HTMLElement>('.print-content')!;
+  if (!firstPage && exportSettings.showTags && frontMatter.tags.length) content.insertAdjacentHTML('beforeend', tagMarkup(frontMatter.tags));
   if (exportSettings.toc && !firstPage) {
     const toc = document.createElement('div');
     toc.className = 'print-toc';
@@ -1792,6 +1992,7 @@ async function paginate(revision: number, rebuild = false) {
     }
     for (const element of splitImageParagraphs(makePrintBlock(block))) {
       element.dataset.blockIndex = String(blockIndex);
+      if (block.kind === 'code') element.dataset.codeStartLine = '0';
       content.append(element);
       await localizeImages(element);
       if (revision !== pdfRevision) return [];
@@ -1855,9 +2056,10 @@ async function paginate(revision: number, rebuild = false) {
       if (lines.length > 1) {
         content.removeChild(element);
         let current: HTMLElement | null = null;
-        for (const line of lines) {
+        for (const [lineIndex, line] of lines.entries()) {
           if (!current) {
             current = element.cloneNode(true) as HTMLElement;
+            current.dataset.codeStartLine = String(lineIndex);
             current.querySelector('pre')!.textContent = '';
             content.append(current);
           }
@@ -1870,6 +2072,7 @@ async function paginate(revision: number, rebuild = false) {
             } else if (old) {
               currentPre.textContent = old; nextPage(block.line);
               current = element.cloneNode(true) as HTMLElement;
+              current.dataset.codeStartLine = String(lineIndex);
               current.querySelector('pre')!.textContent = line;
               content.append(current);
             }
@@ -1929,7 +2132,9 @@ async function paginate(revision: number, rebuild = false) {
   layoutBlocks = blocks.map(block => block.raw);
   layoutBlockLines = blocks.map(block => block.line);
   layoutSettings = layoutKey;
+  layoutRevision = revision;
   reconcileRetainedPages(pages);
+  syncPdfCursor();
   markPageBoundaries();
   post('pageBoundaries', { boundaries: showBreaks ? boundaries : [] });
   return pages;
@@ -2011,13 +2216,120 @@ function reconcileRetainedPages(pages: HTMLElement[]) {
   retainedPageGeometry = [];
 }
 function affectedPdfPage(force: boolean) {
-  const layoutKey = JSON.stringify([exportSettings, settings.editorFontFamily]);
+  const layoutKey = JSON.stringify([exportSettings, settings.editorFontFamily, frontMatter.raw]);
   const changed = firstChangedBlock();
   if (force || exportSettings.cover || exportSettings.toc || layoutSettings !== layoutKey ||
     !layoutPages.length || !layoutPages.every(page => page.isConnected)) return 0;
   if (changed < 0) return pdfPreviewImages.length;
   const affected = Math.min(changed, layoutBlocks.length - 1);
   return changedTextPage(affected) ?? pageContainingBlockOrPrevious(affected);
+}
+type PdfCursorPoint = { pageIndex: number; y: number };
+function pdfPoint(pageIndex: number, rect: DOMRect): PdfCursorPoint {
+  const page = layoutPages[pageIndex];
+  return { pageIndex, y: rect.top + rect.height / 2 - page.getBoundingClientRect().top };
+}
+function pdfFragmentPoint(entries: Array<{ element: HTMLElement; pageIndex: number }>, master: HTMLElement, rect: DOMRect): PdfCursorPoint | null {
+  const offset = rect.top + rect.height / 2 - master.getBoundingClientRect().top;
+  const fragments = entries.filter(entry => entry.element.classList.contains('print-fragment'));
+  const match = fragments.find(({ element }) => {
+    const start = -parseFloat((element.firstElementChild as HTMLElement).style.top || '0');
+    return offset >= start - 1 && offset < start + element.getBoundingClientRect().height + 1;
+  }) || fragments.at(-1);
+  if (!match) return null;
+  const start = -parseFloat((match.element.firstElementChild as HTMLElement).style.top || '0');
+  const fragmentRect = match.element.getBoundingClientRect();
+  return pdfPoint(match.pageIndex, new DOMRect(fragmentRect.left, fragmentRect.top + offset - start, 0, 0));
+}
+function pdfElementPoint(entries: Array<{ element: HTMLElement; pageIndex: number }>, element: HTMLElement): PdfCursorPoint | null {
+  const owner = entries.find(entry => entry.element.contains(element));
+  if (!owner) return null;
+  if (owner.element.classList.contains('print-fragment'))
+    return pdfFragmentPoint(entries, owner.element.firstElementChild as HTMLElement, element.getBoundingClientRect());
+  return pdfPoint(owner.pageIndex, element.getBoundingClientRect());
+}
+function pdfCursorPoint(): PdfCursorPoint | null {
+  if (!cursorPosition || !layoutPages.length) return null;
+  if (frontMatter.raw && cursorPosition.line < frontMatter.bodyLine) {
+    const tag = layoutPages[0].querySelector<HTMLElement>('.document-tags');
+    return tag ? pdfPoint(0, tag.getBoundingClientRect()) : { pageIndex: 0, y: 0 };
+  }
+  const found = cursorBlock();
+  if (!found) return { pageIndex: 0, y: 0 };
+  const entries = layoutPages.flatMap((page, pageIndex) =>
+    [...page.querySelectorAll<HTMLElement>(`.print-content > [data-block-index="${found.index}"]`)]
+      .map(element => ({ element, pageIndex })));
+  if (!entries.length) {
+    const previous = Math.max(0, Math.min(layoutPages.length - 1, pageContainingBlockOrPrevious(found.index)));
+    return { pageIndex: previous, y: 0 };
+  }
+  if (found.block.kind === 'code') {
+    const line = Math.max(0, found.line - found.block.line - 1);
+    const current = entries.find(({ element }) => {
+      const pre = element.querySelector('pre');
+      const start = Number(element.dataset.codeStartLine || 0);
+      return pre && line >= start && line < start + (pre.textContent || '').split('\n').length;
+    }) || entries.at(-1)!;
+    const pre = current.element.querySelector<HTMLElement>('pre');
+    if (pre) {
+      const lines = (pre.textContent || '').split('\n');
+      const local = Math.max(0, Math.min(lines.length - 1, line - Number(current.element.dataset.codeStartLine || 0)));
+      const character = Math.min(lines[local].length, found.offset - (sourceOffsets(source)[found.line] || 0));
+      const position = lines.slice(0, local).reduce((total, value) => total + value.length + 1, 0) + Math.max(0, character);
+      return pdfPoint(current.pageIndex, textRectAt(pre, position) || pre.getBoundingClientRect());
+    }
+  }
+  if (found.block.kind === 'math') {
+    const math = entries[0].element.querySelector<HTMLElement>('.math-block');
+    if (math) return pdfElementPoint(entries, math);
+  }
+  const imageIndex = imageIndexAtCursor(found.block, found.offset);
+  if (imageIndex >= 0) {
+    const images = entries.flatMap(entry => [...entry.element.querySelectorAll<HTMLImageElement>('img')]);
+    const image = images[imageIndex] || images[0];
+    if (image) return pdfElementPoint(entries, image);
+  }
+  const mathIndex = inlineMathIndexAtCursor(found.block, found.offset);
+  if (mathIndex >= 0) {
+    const math = entries.find(entry => entry.element.classList.contains('print-fragment'))?.element.firstElementChild as HTMLElement || entries[0].element;
+    const inline = math.querySelectorAll<HTMLElement>('.math-inline')[mathIndex];
+    if (inline) return pdfElementPoint(entries, inline);
+  }
+  const fragment = entries.find(entry => entry.element.classList.contains('print-fragment'));
+  if (fragment) {
+    const master = fragment.element.firstElementChild as HTMLElement;
+    const text = master.textContent || '';
+    const rect = textRectAt(master, cursorTextOffset(found.block, text, found.offset));
+    if (rect) return pdfFragmentPoint(entries, master, rect);
+  }
+  const texts = entries.map(entry => entry.element.textContent || '');
+  const allText = texts.join('\n');
+  let offset = cursorTextOffset(found.block, allText, found.offset);
+  for (let i = 0; i < entries.length; i++) {
+    if (offset <= texts[i].length || i === entries.length - 1) {
+      const rect = textRectAt(entries[i].element, offset) || entries[i].element.getBoundingClientRect();
+      return pdfPoint(entries[i].pageIndex, rect);
+    }
+    offset -= texts[i].length + 1;
+  }
+  return pdfPoint(entries[0].pageIndex, entries[0].element.getBoundingClientRect());
+}
+function syncPdfCursor() {
+  if (mode !== 'pdf' || !cursorPosition || layoutRevision !== pdfRevision) return;
+  const target = pdfCursorPoint();
+  if (!target) return;
+  const container = document.getElementById('pdfPages');
+  const slot = container?.querySelector<HTMLElement>(`.pdf-page-slot[data-page="${target.pageIndex + 1}"]`);
+  const paper = layoutPages[target.pageIndex];
+  if (!container || !slot || !paper) return;
+  const slotTop = slot.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+  const fraction = Math.max(0, Math.min(1, target.y / Math.max(1, paper.getBoundingClientRect().height)));
+  pdfCursorTarget = { pageIndex: target.pageIndex, fraction };
+  const position = slotTop + fraction * slot.getBoundingClientRect().height;
+  if (position < container.scrollTop + 32 || position > container.scrollTop + container.clientHeight - 32)
+    container.scrollTop = Math.max(0, Math.min(position - container.clientHeight * .45, container.scrollHeight - container.clientHeight));
+  pdfPage = target.pageIndex + 1;
+  updatePageInfo();
 }
 function markPageBoundaries() {
   document.querySelectorAll('#documentBody .page-boundary').forEach(el => el.remove());
@@ -2035,6 +2347,7 @@ function markPageBoundaries() {
 function schedulePdf(rebuild = false, generateNow = false) {
   if (!(mode === 'pdf' || rebuild || generateNow || autoExport)) return;
   const revision = ++pdfRevision;
+  pdfCursorTarget = null;
   pdfDirty = true;
   pdfBytes = null;
   discardPdfPagesFrom(affectedPdfPage(rebuild));
@@ -2207,6 +2520,7 @@ async function renderPdfPages(reusablePages = 0) {
   if (newest && newest !== first && newest.getBoundingClientRect().top < container.getBoundingClientRect().bottom + 700)
     await renderPdfSlot(newest, token);
   updatePageInfo();
+  syncPdfCursor();
 }
 async function renderPdfSlot(slot: HTMLElement, token: number) {
   if (slot.dataset.rendering || slot.querySelector('canvas') || token !== pdfRenderToken) return;
@@ -2302,9 +2616,12 @@ window.addEventListener('message', (event: MessageEvent) => {
     const autoUpdateToggle = document.getElementById('autoUpdate') as HTMLInputElement | null;
     if (autoUpdateToggle) autoUpdateToggle.checked = autoUpdate;
     autoExport = !!message.autoExport;
+    cursorPosition = message.cursor && Number.isInteger(message.cursor.line) && Number.isInteger(message.cursor.character) ? message.cursor : null;
     source = message.source; version = message.version; pdfDirty = true; renderDocument(false);
     if (mode === 'pdf' || autoExport) schedulePdf(true);
   } else if (message.type === 'documentChanged') {
+    if (message.cursor && Number.isInteger(message.cursor.line) && Number.isInteger(message.cursor.character))
+      cursorPosition = message.cursor;
     const sameOwnEdit = pendingEdit && message.source.replace(/\r\n?/g, '\n') === pendingEdit.nextSource.replace(/\r\n?/g, '\n');
     if (sameOwnEdit) {
       applySource(message.source, message.version, true);
@@ -2335,6 +2652,8 @@ window.addEventListener('message', (event: MessageEvent) => {
     pdfDirty = true; renderDocument(); schedulePdf();
   } else if (message.type === 'exportSettings') {
     exportSettings = { ...exportSettings, ...message.value }; normalizeExportSettings();
+    const tagsToggle = document.getElementById('pdfTags') as HTMLInputElement | null;
+    if (tagsToggle) tagsToggle.checked = exportSettings.showTags;
     templateBrush = mode === 'visual' ? exportSettings.pendingTemplateBrush || null : null;
     pdfDirty = true; schedulePdf();
   } else if (message.type === 'templates') {
@@ -2359,6 +2678,12 @@ window.addEventListener('message', (event: MessageEvent) => {
     setFonts(message.fonts || [], message.importedId);
   } else if (message.type === 'scrollToLine') {
     if (mode === 'preview') { lastScrollLine = message.line; scrollToLine(message.line); }
+  } else if (message.type === 'cursorPosition') {
+    if (Number.isInteger(message.line) && Number.isInteger(message.character)) {
+      cursorPosition = { line: message.line, character: message.character };
+      if (mode === 'preview' && settings.syncScroll) scrollPreviewCursor();
+      else if (mode === 'pdf') syncPdfCursor();
+    }
   } else if (message.type === 'exportNow') {
     void exportPdf();
   } else if (message.type === 'saveResult') toast(message.success ? 'Markdown 已保存' : 'Markdown 保存失败', !message.success);

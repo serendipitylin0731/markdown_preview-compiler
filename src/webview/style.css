@@ -25,6 +25,8 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 #workspace.pdf #pdfPane { display: flex; width: 100%; flex-direction: column; }
 .document-scroll { height: 100%; overflow: auto; }
 #documentBody { max-width: var(--editor-width); min-height: 100%; padding: 28px 36px max(80px, calc(var(--preview-height, 600px) / 3)); margin: auto; }
+.document-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
+.document-tag { display: inline-block; padding: 2px 9px; border-radius: 999px; color: #24496a; background: #dcecf7; font: 12px/1.5 system-ui, sans-serif; }
 .markdown-body { font-family: var(--editor-font); font-size: var(--editor-size); line-height: var(--editor-line); overflow-wrap: anywhere; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { line-height: 1.25; margin: 1.3em 0 .55em; font-weight: 700; }
 .markdown-body h1 { font-size: 2em; border-bottom: 1px solid var(--vscode-panel-border, #8886); padding-bottom: .25em; }
@@ -50,6 +52,10 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .markdown-body details { margin: 1em 0; padding: .5em .75em; border: 1px solid var(--vscode-panel-border, #aaa); border-radius: 5px; }
 .markdown-body summary { cursor: pointer; font-weight: 600; }
 .markdown-body details[open] > summary { margin-bottom: .6em; }
+.markdown-body details.admonition { border-left: 4px solid #4b8db8; background: #eaf4fb; color: #20242a; }
+.markdown-body details.admonition-warning, .markdown-body details.admonition-caution { border-left-color: #bd8424; background: #fff5de; }
+.markdown-body details.admonition-danger { border-left-color: #bf5454; background: #fff0ee; }
+.markdown-body details.admonition-tip, .markdown-body details.admonition-success { border-left-color: #438b68; background: #eaf7ef; }
 .markdown-body hr { border: none; border-top: 1px solid var(--vscode-panel-border, #aaa); }
 .markdown-body .hljs { color: var(--vscode-editor-foreground); }
 .md-block { position: relative; }

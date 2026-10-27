@@ -826,6 +826,267 @@ test('HTML details enclose Markdown content and highlight syntax survives previe
   await pdf.close();
 });
 
+test('front matter stays hidden, tags render at the top, and PDF tag visibility is selectable', async () => {
+  const source = '---\ntitle: Hidden title\ntag: 算法, 图论, <unsafe>\nother: secret\n---\n# 可见标题\n\n正文。\n';
+  const preview = await browser.newPage();
+  await preview.goto(base + '/?mode=preview');
+  await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(preview, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  assert.deepEqual(await preview.locator('#documentBody .document-tag').allTextContents(), ['算法', '图论', '<unsafe>']);
+  assert.equal(await preview.locator('#documentBody h1').textContent(), '可见标题');
+  assert.equal(await preview.locator('#documentBody .md-block').first().getAttribute('data-line'), '5');
+  assert.doesNotMatch(await preview.locator('#documentBody').textContent(), /Hidden title|secret/);
+  await preview.close();
+
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(pdf, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await pdf.locator('#printHost .document-tag').count(), 3);
+  await pdf.evaluate(() => window.__OLD_CANVAS__ = document.querySelector('#pdfPages canvas'));
+  await pdf.locator('#pdfTags').uncheck();
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
+    !document.querySelector('#printHost .document-tag') && document.querySelector('#pdfPages canvas') !== window.__OLD_CANVAS__, { timeout: 30000 });
+  assert.equal(await pdf.locator('#documentBody .document-tag').count(), 3);
+  assert.equal(await pdf.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'saveSettings')?.value.showTags), false);
+  await pdf.close();
+});
+
+test('HTML details keep their preview state across edits and open in PDF', async () => {
+  const source = '# 标题\n\n<details>\n<summary>答案 A</summary>\n\n第一段。\n\n</details>\n\n' +
+    '<details>\n<summary>答案 B</summary>\n\n第二段。\n\n</details>\n';
+  const preview = await browser.newPage();
+  await preview.goto(base + '/?mode=preview');
+  await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(preview, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await preview.locator('#documentBody details summary').first().click();
+  await deliver(preview, { type: 'documentChanged', source: source.replace('标题', '修改后的标题'), version: 2 });
+  assert.deepEqual(await preview.locator('#documentBody details').evaluateAll(items => items.map(item => item.open)), [true, false]);
+  await deliver(preview, { type: 'documentChanged', source: source.replace('标题', '修改后的标题').replace('第一段', '修改后的第一段'), version: 3 });
+  assert.deepEqual(await preview.locator('#documentBody details').evaluateAll(items => items.map(item => item.open)), [true, false]);
+  await deliver(preview, { type: 'documentChanged', source: source.replace('标题', '修改后的标题').replace('答案 A', '答案 A 更新'), version: 4 });
+  assert.deepEqual(await preview.locator('#documentBody details').evaluateAll(items => items.map(item => item.open)), [true, false]);
+  await preview.close();
+
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(pdf, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.deepEqual(await pdf.locator('#printHost details').evaluateAll(items => items.map(item => item.open)), [true, true]);
+  await pdf.close();
+});
+
+test('triple-colon info blocks fold in preview and expand in PDF', async () => {
+  const source = '# 提示块\n\n:::info[]\n内容与 **重点**。\n\n- 第一项\n- 第二项\n\n```text\n:::warning[代码里的文字]\n```\n:::\n\n' +
+    ':::warning[自定义标题]\n警告正文。\n:::\n';
+  const preview = await browser.newPage();
+  await preview.goto(base + '/?mode=preview');
+  await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(preview, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  assert.deepEqual(await preview.locator('#documentBody details.admonition > summary').allTextContents(), ['信息', '自定义标题']);
+  assert.equal(await preview.locator('#documentBody .render-warning').count(), 0);
+  await preview.locator('#documentBody details.admonition summary').first().click();
+  assert.equal(await preview.locator('#documentBody details.admonition strong').textContent(), '重点');
+  assert.equal(await preview.locator('#documentBody details.admonition li').count(), 2);
+  assert.match(await preview.locator('#documentBody details.admonition pre').textContent(), /:::warning\[代码里的文字\]/);
+  await deliver(preview, { type: 'documentChanged', source: source.replace('提示块', '更新的提示块'), version: 2 });
+  assert.deepEqual(await preview.locator('#documentBody details.admonition').evaluateAll(items => items.map(item => item.open)), [true, false]);
+  await preview.close();
+
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(pdf, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.deepEqual(await pdf.locator('#printHost details.admonition').evaluateAll(items => items.map(item => item.open)), [true, true]);
+  assert.equal(await pdf.locator('#printHost details.admonition li').count(), 2);
+  await pdf.close();
+});
+
+test('source cursor stays visible in split preview across headings, code, formulas, and HTML', async () => {
+  const lines = ['# 起始标题', '', ...Array.from({ length: 36 }, (_, i) => `段落 ${i} 的正文内容。`), '',
+    '```txt', ...Array.from({ length: 14 }, (_, i) => `code-line-${String(i).padStart(3, '0')}`), '```', '',
+    '$$', 'E = mc^2', '$$', '', '<details>', '<summary>详细说明</summary>', '', 'HTML 内部文字。', '', '</details>'];
+  const source = lines.join('\n') + '\n';
+  const page = await browser.newPage({ viewport: { width: 820, height: 540 } });
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true }, exportSettings: {}, templates: [],
+    cursor: { line: 0, character: 3 } });
+  for (const [marker, selector] of [['起始标题', 'h1'], ['code-line-012', 'pre code'], ['E = mc^2', '.math-block'],
+    ['详细说明', 'details summary']]) {
+    const line = lines.findIndex(value => value.includes(marker));
+    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3) });
+    const visible = await page.evaluate(selector => {
+      const pane = document.querySelector('.document-scroll').getBoundingClientRect();
+      const target = document.querySelector(`#documentBody ${selector}`).getBoundingClientRect();
+      return target.top < pane.bottom - 20 && target.bottom > pane.top + 20;
+    }, selector);
+    assert.equal(visible, true, marker);
+  }
+  await page.close();
+});
+
+test('split preview follows a long code line and text around many images after they load', async () => {
+  const lines = ['# 预览定位', '', '```txt', ...Array.from({ length: 64 }, (_, i) => `code-line-${String(i).padStart(3, '0')}`), '```', '',
+    '图片前文字 ![行内图片](./logo.png) 图片后文字', '',
+    ...Array.from({ length: 10 }, (_, i) => [`![图片${i}](./logo.png)`, '']).flat(),
+    '<details>', '<summary>详细说明</summary>', '', '内部内容。', '', '</details>'];
+  const source = lines.join('\n') + '\n';
+  const page = await browser.newPage({ viewport: { width: 820, height: 540 } });
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  const lastImage = lines.findIndex(value => value.includes('图片9'));
+  await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true }, exportSettings: {}, templates: [],
+    cursor: { line: lastImage, character: 4 } });
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'resolveImage'), { timeout: 5000 });
+  const requests = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage'));
+  const data = `data:image/png;base64,${fs.readFileSync(path.resolve(__dirname, '..', 'assets/logo.png')).toString('base64')}`;
+  for (const request of requests) await deliver(page, { type: 'imageResolved', id: request.id, data });
+  await page.waitForFunction(() => document.querySelector('#documentBody img[alt="图片9"]')?.complete);
+  await page.waitForFunction(() => {
+    const pane = document.querySelector('.document-scroll').getBoundingClientRect();
+    const image = document.querySelector('#documentBody img[alt="图片9"]')?.getBoundingClientRect();
+    return image && image.top > pane.top + 15 && image.bottom < pane.bottom - 15;
+  }, null, { timeout: 5000 });
+  const checks = [
+    ['code-line-050', 'text'], ['图片前文字', 'text'], ['行内图片', 'image'], ['图片后文字', 'text'],
+    ['图片4', 'image'], ['图片9', 'image'], ['详细说明', 'text']
+  ];
+  for (const [marker, kind] of checks) {
+    const line = lines.findIndex(value => value.includes(marker));
+    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3) });
+    const visible = await page.evaluate(({ marker, kind }) => {
+      const pane = document.querySelector('.document-scroll').getBoundingClientRect();
+      let rect;
+      if (kind === 'image') rect = [...document.querySelectorAll('#documentBody img')].find(image => image.alt === marker)?.getBoundingClientRect();
+      else {
+        const root = document.getElementById('documentBody');
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          const node = walker.currentNode;
+          const index = node.textContent.indexOf(marker);
+          if (index < 0) continue;
+          const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + marker.length);
+          rect = range.getBoundingClientRect(); break;
+        }
+      }
+      return !!rect && rect.top > pane.top + 15 && rect.bottom < pane.bottom - 15;
+    }, { marker, kind });
+    assert.equal(visible, true, marker);
+  }
+  await page.close();
+});
+
+test('source cursor follows the correct PDF page and position through long code, images, math, and HTML', async () => {
+  const lines = ['---', 'tag: cursor, pdf', '---', '# 起始标题', '', '第一页正文。', '', '<!-- pagebreak -->', '',
+    '## 长代码', '', '```txt', ...Array.from({ length: 75 }, (_, i) => `code-line-${String(i).padStart(3, '0')}`), '```', '',
+    '<!-- pagebreak -->', '', '$$', 'E = mc^2', '$$', '',
+    '图片前文字 ![行内图片](./logo.png) 图片后文字', '',
+    ...Array.from({ length: 12 }, (_, i) => [`![图片${i}](./logo.png)`, '']).flat(),
+    '<details>', '<summary>详细说明</summary>', '', 'HTML 内部文字。', '', '</details>'];
+  const source = lines.join('\n') + '\n';
+  const page = await browser.newPage({ viewport: { width: 980, height: 650 } });
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  const lateLine = lines.findIndex(value => value.includes('图片11'));
+  await deliver(page, { type: 'document', source, version: 1, settings: { autoUpdate: true },
+    exportSettings: { paper: 'a5' }, templates: [], cursor: { line: lateLine, character: 4 } });
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'resolveImage'), { timeout: 5000 });
+  const requests = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage'));
+  const data = `data:image/png;base64,${fs.readFileSync(path.resolve(__dirname, '..', 'assets/logo.png')).toString('base64')}`;
+  for (const request of requests) await deliver(page, { type: 'imageResolved', id: request.id, data });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const initialTarget = await page.evaluate(() => {
+    const image = document.querySelector('#printHost img[alt="图片11"]');
+    return { expected: [...document.querySelectorAll('#printHost .print-page')].indexOf(image.closest('.print-page')) + 1,
+      current: Number(document.getElementById('pageInfo').textContent.split('/')[0].trim()) };
+  });
+  assert.equal(initialTarget.current, initialTarget.expected, 'a late cursor should be revealed as pages finish generating');
+  for (const [marker, selector, kind] of [
+    ['起始标题', 'h1', 'element'], ['code-line-045', 'pre', 'text'], ['E = mc^2', '.math-block', 'element'],
+    ['图片前文字', 'p', 'element'], ['行内图片', 'img[alt="行内图片"]', 'element'], ['图片后文字', 'p', 'element'],
+    ['图片0', 'img[alt="图片0"]', 'element'], ['图片7', 'img[alt="图片7"]', 'element'],
+    ['图片11', 'img[alt="图片11"]', 'element'], ['详细说明', 'details summary', 'element']
+  ]) {
+    const line = lines.findIndex(value => value.includes(marker));
+    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3) });
+    const position = await page.evaluate(({ marker, selector, kind }) => {
+      const elements = [...document.querySelectorAll(`#printHost ${selector}`)];
+      const element = kind === 'text' ? elements.find(item => item.textContent.includes(marker)) :
+        selector.startsWith('img') ? elements[0] : elements.find(item => item.textContent?.includes(marker)) || elements[0];
+      if (!element) return null;
+      let rect = element.getBoundingClientRect();
+      if (kind === 'text') {
+        const node = element.firstChild;
+        const index = node?.textContent?.indexOf(marker) ?? -1;
+        if (index >= 0) { const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + marker.length); rect = range.getBoundingClientRect(); }
+      }
+      const pages = [...document.querySelectorAll('#printHost .print-page')];
+      const paper = element.closest('.print-page');
+      const number = pages.indexOf(paper) + 1;
+      const slot = document.querySelector(`#pdfPages .pdf-page-slot[data-page="${number}"]`);
+      const viewport = document.getElementById('pdfPages').getBoundingClientRect();
+      const slotRect = slot?.getBoundingClientRect(), pageRect = paper.getBoundingClientRect();
+      const y = slotRect && slotRect.top + (rect.top + rect.height / 2 - pageRect.top) / pageRect.height * slotRect.height;
+      return { number, current: Number(document.getElementById('pageInfo').textContent.split('/')[0].trim()),
+        visible: y >= viewport.top + 20 && y <= viewport.bottom - 20, y, viewportTop: viewport.top, viewportBottom: viewport.bottom };
+    }, { marker, selector, kind });
+    assert.ok(position, marker);
+    assert.equal(position.current, position.number, JSON.stringify({ marker, position }));
+    assert.equal(position.visible, true, JSON.stringify({ marker, position }));
+  }
+  await page.close();
+});
+
+test('source cursor finds its rendered line inside a paragraph split across PDF pages', async () => {
+  const sentence = index => `第${String(index).padStart(3, '0')}句用于定位自动分页。`;
+  const paragraph = Array.from({ length: 400 }, (_, index) => sentence(index)).join('');
+  const source = `# 长段落\n\n${paragraph}\n`;
+  const page = await browser.newPage({ viewport: { width: 950, height: 620 } });
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: { paper: 'a5' }, templates: [],
+    cursor: { line: 2, character: paragraph.indexOf(sentence(320)) + 5 } });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  for (const index of [320, 180, 40]) {
+    await deliver(page, { type: 'cursorPosition', line: 2, character: paragraph.indexOf(sentence(index)) + 5 });
+    const actual = await page.evaluate(marker => {
+      const fragments = [...document.querySelectorAll('#printHost .print-fragment')];
+      const master = fragments[0].firstElementChild;
+      const textIndex = master.textContent.indexOf(marker);
+      const walker = document.createTreeWalker(master, NodeFilter.SHOW_TEXT);
+      let remaining = textIndex, rect;
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (remaining >= node.textContent.length) { remaining -= node.textContent.length; continue; }
+        const range = document.createRange(); range.setStart(node, remaining); range.setEnd(node, remaining + 1);
+        rect = range.getBoundingClientRect(); break;
+      }
+      const local = rect.top - master.getBoundingClientRect().top;
+      const fragment = fragments.find(item => {
+        const start = -parseFloat(item.firstElementChild.style.top || '0');
+        return local >= start - 1 && local < start + item.getBoundingClientRect().height + 1;
+      });
+      const paper = fragment?.closest('.print-page');
+      const number = [...document.querySelectorAll('#printHost .print-page')].indexOf(paper) + 1;
+      const container = document.getElementById('pdfPages').getBoundingClientRect();
+      const slot = document.querySelector(`#pdfPages .pdf-page-slot[data-page="${number}"]`).getBoundingClientRect();
+      const start = -parseFloat(fragment.firstElementChild.style.top || '0');
+      const point = fragment.getBoundingClientRect().top + local - start - paper.getBoundingClientRect().top;
+      const y = slot.top + point / paper.getBoundingClientRect().height * slot.height;
+      return { number, current: Number(document.getElementById('pageInfo').textContent.split('/')[0].trim()),
+        visible: y > container.top + 20 && y < container.bottom - 20 };
+    }, sentence(index));
+    assert.ok(actual.number > 0, JSON.stringify({ index, actual }));
+    assert.equal(actual.current, actual.number, JSON.stringify({ index, actual }));
+    assert.equal(actual.visible, true, JSON.stringify({ index, actual }));
+  }
+  await page.close();
+});
+
 test('a long paragraph continues across PDF pages', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');

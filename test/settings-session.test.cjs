@@ -10,6 +10,7 @@ test('PDF layout persists by file across previews without mixing files', async (
   const documents = [first, second];
   const commands = new Map();
   const panels = [];
+  let selectionListener;
   const stored = new Map([
     ['exportSettings', { paper: 'letter', fontSize: 30 }],
     ['templateSelections', { [first.uri.toString()]: { templateRanges: [{ start: 0, end: 2, id: 'academic' }] } }]
@@ -49,6 +50,7 @@ test('PDF layout persists by file across previews without mixing files', async (
         return panel;
       },
       onDidChangeTextEditorVisibleRanges: disposable,
+      onDidChangeTextEditorSelection: callback => { selectionListener = callback; return disposable(); },
       onDidChangeVisibleTextEditors: disposable,
       onDidChangeActiveTextEditor: disposable
     },
@@ -69,8 +71,12 @@ test('PDF layout persists by file across previews without mixing files', async (
     });
     await commands.get('markdownCompiler.pdf')();
     const one = panels.at(-1);
+    vscode.window.visibleTextEditors = [{ document: first, selection: { active: { line: 4, character: 2 } }, setDecorations() {} }];
     await one.deliver({ type: 'ready' });
     assert.deepEqual(one.messages.at(-1).exportSettings, {}, 'old global layout must be ignored');
+    assert.deepEqual(one.messages.at(-1).cursor, { line: 4, character: 2 });
+    selectionListener({ textEditor: { document: first }, selections: [{ active: { line: 3, character: 7 } }] });
+    assert.deepEqual(one.messages.at(-1), { type: 'cursorPosition', line: 3, character: 7 });
 
     await one.deliver({ type: 'saveSettings', value: { paper: 'a5', marginTop: 37, template: 'academic',
       templateRanges: [{ start: 0, end: 1, id: 'technical' }] } });

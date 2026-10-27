@@ -110,6 +110,11 @@ async function openPanel(document: vscode.TextDocument, mode: Mode, column: vsco
 }
 
 function post(state: Panel, message: unknown) { void state.panel.webview.postMessage(message); }
+function cursorFor(uri: vscode.Uri) {
+  const editor = vscode.window.visibleTextEditors.find(item => item.document.uri.toString() === uri.toString());
+  const position = editor?.selection?.active;
+  return position ? { line: position.line, character: position.character } : undefined;
+}
 function pdfLayoutKey(uri: vscode.Uri) { return `pdfLayout:${uri.toString()}`; }
 function templatesFor(state: Panel) {
   return extensionContext.globalState.get<any[]>('templates', []).map(template => ({
@@ -162,7 +167,7 @@ async function handleMessage(state: Panel, message: any) {
       post(state, { type: 'document', source: document.getText(), version: document.version, settings: settings(document.uri),
         exportSettings: state.exportSettings || extensionContext.globalState.get<Record<string, any>>(pdfLayoutKey(state.uri), {}),
         templates: templatesFor(state), fonts: fontsFor(state),
-        autoExport: state.autoExport });
+        autoExport: state.autoExport, cursor: cursorFor(state.uri) });
       state.autoExport = false;
     } else if (message.type === 'resolveImage') {
       const id = String(message.id || '');
@@ -379,13 +384,22 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.workspace.onDidChangeTextDocument(event => {
       for (const state of panels) if (state.uri.toString() === event.document.uri.toString())
-        post(state, { type: 'documentChanged', source: event.document.getText(), version: event.document.version });
+        post(state, { type: 'documentChanged', source: event.document.getText(), version: event.document.version,
+          cursor: cursorFor(state.uri) });
+    }),
+    vscode.window.onDidChangeTextEditorSelection(event => {
+      for (const state of panels) if (state.uri.toString() === event.textEditor.document.uri.toString() &&
+        (state.mode === 'pdf' || state.mode === 'preview' && settings(state.uri).syncScroll))
+        post(state, { type: 'cursorPosition', line: event.selections[0].active.line,
+          character: event.selections[0].active.character });
     }),
     vscode.window.onDidChangeTextEditorVisibleRanges(event => {
       if (!settings(event.textEditor.document.uri).syncScroll) return;
       if (Date.now() < (editorScrollEchoUntil.get(event.textEditor.document.uri.toString()) || 0)) return;
       for (const state of panels) if (state.mode === 'preview' && state.uri.toString() === event.textEditor.document.uri.toString())
-        post(state, { type: 'scrollToLine', line: event.visibleRanges[0]?.start.line ?? 0 });
+        if (event.textEditor.selection?.active && event.visibleRanges.some(range => range.contains(event.textEditor.selection.active)))
+          post(state, { type: 'cursorPosition', line: event.textEditor.selection.active.line,
+            character: event.textEditor.selection.active.character });
     }),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('markdownCompiler') || event.affectsConfiguration('editor.fontFamily'))
@@ -393,7 +407,12 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.window.onDidChangeVisibleTextEditors(() => refreshBoundaryDecorations()),
     vscode.window.onDidChangeActiveTextEditor(editor => {
-      if (editor?.document.languageId === 'markdown') lastDocument = editor.document.uri;
+      if (editor?.document.languageId === 'markdown') {
+        lastDocument = editor.document.uri;
+        for (const state of panels) if (state.uri.toString() === editor.document.uri.toString() && editor.selection?.active)
+          post(state, { type: 'cursorPosition', line: editor.selection.active.line,
+            character: editor.selection.active.character });
+      }
     })
   );
 }
