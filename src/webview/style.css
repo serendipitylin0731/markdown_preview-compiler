@@ -62,6 +62,30 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .markdown-body .admonition-warning .admonition-icon { color: #c94747; }
 .markdown-body hr { border: none; border-top: 1px solid var(--vscode-panel-border, #aaa); }
 .markdown-body .hljs { color: var(--vscode-editor-foreground); }
+.code-frame { --code-keyword: #8b3fb0; --code-string: #16743e; --code-number: #b05209; --code-comment: #697783;
+  --code-title: #185fa3; --code-variable: #a53f47; --code-meta: #895c19;
+  max-width: 100%; margin: 1em 0; border: 1px solid var(--vscode-panel-border, #8886); border-radius: 6px;
+  overflow: hidden; background: var(--vscode-textCodeBlock-background, #8882); }
+body.vscode-dark .code-frame, body.vscode-high-contrast .code-frame { --code-keyword: #c586c0; --code-string: #a5d6a7;
+  --code-number: #d7ba7d; --code-comment: #8da39a; --code-title: #79c0ff; --code-variable: #e9a4a4; --code-meta: #dcdcaa; }
+.code-language { padding: 5px 12px 3px; color: var(--vscode-descriptionForeground, #697783);
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; text-align: left; }
+.code-body { display: flex; align-items: stretch; min-width: 0; }
+.code-frame .code-body pre { flex: 1; min-width: 0; margin: 0; padding: 5px 12px 11px;
+  border-radius: 0; background: transparent; }
+.code-gutter { flex: none; padding: 5px 7px 11px 12px; white-space: pre; text-align: right;
+  user-select: none; color: var(--vscode-descriptionForeground, #697783);
+  border-right: 1px solid var(--vscode-panel-border, #8886);
+  font: .9em/var(--editor-line) ui-monospace, SFMono-Regular, Consolas, monospace; }
+.code-frame .hljs-keyword, .code-frame .hljs-selector-tag, .code-frame .hljs-literal, .code-frame .hljs-built_in,
+.code-frame .hljs-type { color: var(--code-keyword) !important; }
+.code-frame .hljs-string, .code-frame .hljs-regexp, .code-frame .hljs-addition, .code-frame .hljs-template-tag { color: var(--code-string) !important; }
+.code-frame .hljs-number, .code-frame .hljs-symbol, .code-frame .hljs-bullet { color: var(--code-number) !important; }
+.code-frame .hljs-comment, .code-frame .hljs-quote, .code-frame .hljs-deletion { color: var(--code-comment) !important; }
+.code-frame .hljs-title, .code-frame .hljs-title.function_, .code-frame .hljs-section, .code-frame .hljs-attr,
+.code-frame .hljs-attribute { color: var(--code-title) !important; }
+.code-frame .hljs-variable, .code-frame .hljs-params, .code-frame .hljs-property { color: var(--code-variable) !important; }
+.code-frame .hljs-meta, .code-frame .hljs-doctag, .code-frame .hljs-tag { color: var(--code-meta) !important; }
 .md-block { position: relative; }
 .md-block > .block-content { outline: none; min-height: 1em; }
 .direct-editor pre code { display: block; min-height: 1.4em; white-space: pre; outline: none; }
@@ -149,10 +173,12 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
   --vscode-foreground: #20242a; --vscode-editor-foreground: #20242a; --vscode-textCodeBlock-background: #f3f6f9;
   --vscode-editorWidget-background: #edf1f5; --vscode-panel-border: #aab4bf; --vscode-textLink-foreground: #155d94;
   --vscode-textBlockQuote-foreground: #495566; --vscode-textBlockQuote-border: #aab4bf; }
+#printHost .code-frame { --code-keyword: #743aa7; --code-string: #176b3f; --code-number: #9c4906;
+  --code-comment: #63727c; --code-title: #125a9e; --code-variable: #9e3943; --code-meta: #785516; }
 .print-page { position: relative; overflow: hidden; background-color: white; background-position: center; background-size: 100% 100%; color: #20242a; }
 .print-content { position: absolute; top: var(--margin-top); bottom: var(--margin-bottom); left: var(--margin-left); right: var(--margin-right); overflow: hidden; color: #20242a; font-family: var(--print-font-family); font-size: var(--print-font-size); line-height: var(--print-line-height); text-align: var(--print-align); }
 .print-chinese { font-family: "Songti SC", SimSun, "Noto Serif CJK SC", "Source Han Serif SC", serif; }
-#printHost .print-content :is(h1, h2, h3, h4, h5, h6, p, li, th, td, blockquote, pre, code, .hljs, .hljs *) { color: #20242a; }
+#printHost .print-content :is(h1, h2, h3, h4, h5, h6, p, li, th, td, blockquote, pre, code, .hljs) { color: #20242a; }
 #printHost .print-content a { color: #155d94; }
 #printHost .print-content summary { cursor: default; }
 .print-content p { margin-bottom: var(--print-paragraph-gap); text-indent: var(--print-indent); }
@@ -169,6 +195,9 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .print-content pre { background: var(--print-code-bg); }
 #printHost .print-content :not(pre)>code { background: transparent; }
 #printHost .print-content pre { background: var(--print-code-bg); }
+#printHost .print-content .code-frame { background: var(--print-code-bg); }
+#printHost .print-content .code-frame pre { background: var(--print-code-bg); }
+#printHost .print-content .code-gutter { line-height: var(--print-line-height); }
 #printHost .print-content pre code, #printHost .print-content pre .hljs { background: transparent; }
 .print-content table { width: 100%; display: table; }
 .print-content th { background: var(--print-table-header); }

@@ -177,7 +177,7 @@ async function handleMessage(state: Panel, message: any) {
           const target = /^file:/i.test(source) ? vscode.Uri.parse(source) :
             vscode.Uri.joinPath(document.uri, '..', decodeURIComponent(source.split(/[?#]/, 1)[0]));
           return vscode.workspace.fs.readFile(target);
-        });
+        }, vscode.workspace.getConfiguration('http').get<string>('proxy') || '');
         post(state, { type: 'imageResolved', id, data });
       } catch (error) {
         post(state, { type: 'imageResolved', id, error: error instanceof Error ? error.message : String(error) });

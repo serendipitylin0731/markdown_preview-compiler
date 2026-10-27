@@ -104,4 +104,16 @@ printf 'hello\n'
 这里是有标题的警告折叠块。
 :::
 
+## 带行号的高亮代码
+
+在语言名后加 `=` 即可显示行号，代码框左上角显示语言：
+
+```python=
+def greet(name):
+    message = f"Hello, {name}!"
+    return message
+
+print(greet("Markdown"))
+```
+
 [^note]: 脚注会显示在文档末尾。

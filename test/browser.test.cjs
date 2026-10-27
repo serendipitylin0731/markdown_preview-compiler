@@ -552,6 +552,31 @@ test('PDF embeds both relative and web images supplied by the extension host', a
   await page.close();
 });
 
+test('a transient image failure retries and clears the stale error after loading', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const url = 'https://example.invalid/transient.png';
+  const source = `![重试图片](${url})`;
+  await deliver(page, { type: 'document', source, version: 1,
+    settings: {}, exportSettings: {}, templates: [] });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.waitForFunction(count => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage').length === count, attempt + 1);
+    const request = await page.evaluate(index => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage')[index], attempt);
+    await deliver(page, { type: 'imageResolved', id: request.id, error: '临时网络故障' });
+  }
+  await page.waitForFunction(() => document.getElementById('status')?.textContent?.includes('图片无法加载'));
+  await deliver(page, { type: 'documentChanged', source: source + '\n', version: 2 });
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage').length === 4);
+  const retry = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage')[3]);
+  const data = `data:image/png;base64,${fs.readFileSync(path.resolve(__dirname, '..', 'assets/logo.png')).toString('base64')}`;
+  await deliver(page, { type: 'imageResolved', id: retry.id, data });
+  await page.waitForFunction(() => document.querySelector('#documentBody img')?.naturalWidth === 256);
+  assert.equal(await page.locator('#documentBody img.missing-image').count(), 0);
+  assert.doesNotMatch(await page.locator('#status').textContent(), /图片无法加载/);
+  await page.close();
+});
+
 test('PDF moves a picture to the next page and scales an oversized picture without cropping', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');
@@ -1344,6 +1369,48 @@ test('math, highlighted code, Mermaid and footnotes render safely', async () => 
   assert.equal(mermaid.arrow, 'rgb(190, 205, 227)');
   assert.deepEqual(errors, []);
   await page.close();
+});
+
+test('numbered code highlights in split preview, visual editing and paginated PDF', async () => {
+  const source = '```python=10\ndef greet(name):\n    return "Hello, " + name\n```\n';
+  for (const mode of ['preview', 'visual', 'pdf']) {
+    const page = await browser.newPage();
+    await page.goto(base + `/?mode=${mode}`);
+    await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+    await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+    if (mode === 'pdf') await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+    const selector = mode === 'pdf' ? '#printHost .code-frame' : '#documentBody .code-frame';
+    const code = await page.locator(selector).first().evaluate(frame => {
+      const keyword = frame.querySelector('.hljs-keyword');
+      return { language: frame.querySelector('.code-language')?.textContent,
+        gutter: frame.querySelector('.code-gutter')?.textContent,
+        keyword: keyword?.textContent, keywordColor: keyword && getComputedStyle(keyword).color,
+        baseColor: getComputedStyle(frame.querySelector('code')).color,
+        editable: !!frame.querySelector('[data-direct="code"]') };
+    });
+    assert.equal(code.language, 'python');
+    assert.equal(code.gutter, '10\n11');
+    assert.equal(code.keyword, 'def');
+    assert.notEqual(code.keywordColor, code.baseColor);
+    assert.equal(code.editable, mode === 'visual');
+    await page.close();
+  }
+
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const long = '```python=\n' + Array.from({ length: 90 }, (_, i) => `def row_${i}(): return ${i}`).join('\n') + '\n```\n';
+  await deliver(pdf, { type: 'document', source: long, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const pages = await pdf.evaluate(() => [...document.querySelectorAll('#printHost .print-page .code-frame')].map(frame => ({
+    gutter: frame.querySelector('.code-gutter')?.textContent,
+    highlighted: frame.querySelectorAll('.hljs-keyword').length,
+    text: frame.querySelector('pre code')?.textContent
+  })));
+  assert.ok(pages.length > 1, JSON.stringify(pages));
+  assert.deepEqual(pages.flatMap(page => page.gutter.split('\n').map(Number)), Array.from({ length: 90 }, (_, i) => i + 1));
+  assert.ok(pages.every(page => page.highlighted > 0), JSON.stringify(pages));
+  await pdf.close();
 });
 
 test('branch cases with operatorname render in both preview and PDF', async () => {

@@ -30,15 +30,32 @@ RegisterHTMLHandler(mathAdaptor);
 const printMathDocument = mathjax.document('', { InputJax: new TeX({ packages: ['base', 'ams'] }),
   OutputJax: new SVG({ fontCache: 'local' }) });
 
-const md = new MarkdownIt({
-  html: true, linkify: true, typographer: true,
-  highlight(code, language) {
-    if (language && hljs.getLanguage(language)) {
-      try { return `<pre class="hljs"><code>${hljs.highlight(code, { language }).value}</code></pre>`; } catch {}
-    }
-    return `<pre class="hljs"><code>${md.utils.escapeHtml(code)}</code></pre>`;
+const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
+  .use(anchor, { permalink: false }).use(footnote).use(taskLists, { enabled: false, label: false });
+
+function codeInfo(raw: string) {
+  const marker = raw.trim().split(/\s+/, 1)[0] || '';
+  const match = marker.match(/^([^=]*?)(?:=(\d*))?$/);
+  const language = (match?.[1] || marker).toLowerCase();
+  return { language, numbered: !!match?.[2] || marker.endsWith('='), start: Math.max(1, Math.min(999999, Number(match?.[2]) || 1)) };
+}
+function highlightedCode(code: string, language: string) {
+  if (language && hljs.getLanguage(language)) {
+    try { return hljs.highlight(code, { language, ignoreIllegals: true }).value; } catch { /* Plain code remains readable. */ }
   }
-}).use(anchor, { permalink: false }).use(footnote).use(taskLists, { enabled: false, label: false });
+  return md.utils.escapeHtml(code);
+}
+function codeFrameMarkup(content: string, rawInfo = '', editable = false) {
+  const { language, numbered, start } = codeInfo(rawInfo);
+  const code = content;
+  const count = code.replace(/\n$/, '').split('\n').length;
+  const numbers = numbered ? `<div class="code-gutter" aria-hidden="true">${Array.from({ length: count }, (_, i) => start + i).join('\n')}</div>` : '';
+  return `<div class="code-frame${numbered ? ' with-line-numbers' : ''}" data-language="${esc(language)}" data-line-start="${start}">
+    <div class="code-language" aria-hidden="true">${esc(language || 'Code')}</div>
+    <div class="code-body">${numbers}<pre class="hljs"><code${editable ? ' contenteditable="true" spellcheck="false" data-direct="code"' : ''}>${highlightedCode(code, language)}</code></pre></div>
+  </div>`;
+}
+md.renderer.rules.code_block = (tokens, i) => codeFrameMarkup(tokens[i].content);
 
 md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
   if (state.src[state.pos] !== '$' || state.src[state.pos + 1] === '$') return false;
@@ -127,12 +144,11 @@ md.renderer.rules.admonition = (tokens, i) => {
     kind === 'warning' ? '<svg class="admonition-icon" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 2.7a1.2 1.2 0 0 1 2 0l7.2 12.4a1.3 1.3 0 0 1-1.1 1.9H2.9a1.3 1.3 0 0 1-1.1-1.9L9 2.7Z"/><path d="M10 7v4.5M10 14v.3" stroke-linecap="round"/></svg>' : '';
   return `<details class="admonition admonition-${kind}"><summary>${icon}${esc(title || labels[kind] || kind)}</summary>${md.render(tokens[i].content)}</details>`;
 };
-const originalFence = md.renderer.rules.fence;
 md.renderer.rules.fence = (tokens, i, options, env, self) => {
   if (tokens[i].info.trim().toLowerCase() === 'mermaid') {
     return `<div class="mermaid-source" data-graph="${encodeURIComponent(tokens[i].content)}">正在渲染图表…</div>`;
   }
-  return originalFence!(tokens, i, options, env, self);
+  return codeFrameMarkup(tokens[i].content, tokens[i].info);
 };
 md.renderer.rules.html_block = (tokens, i) => {
   if (/^\s*<!--\s*pagebreak\s*-->\s*$/i.test(tokens[i].content))
@@ -363,19 +379,30 @@ async function localizeImages(container: HTMLElement) {
     const raw = img.dataset.originalSrc || img.getAttribute('src') || '';
     if (!raw) return;
     if (!/^(data:|blob:|vscode-)/i.test(raw)) img.dataset.originalSrc = raw;
-    try {
-      const data = /^(data:|blob:|vscode-)/i.test(raw) ? raw : await resolvedImage(raw);
-      if (!img.isConnected) return;
-      img.src = data;
-      await img.decode();
-      img.classList.remove('missing-image');
-      delete img.dataset.renderError;
-    } catch (error) {
-      if (!img.isConnected) return;
-      img.removeAttribute('src');
-      img.classList.add('missing-image');
-      img.dataset.renderError = `图片无法加载：${raw}（${error instanceof Error ? error.message : error}）`;
-      toast(img.dataset.renderError, true);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const data = /^(data:|blob:|vscode-)/i.test(raw) ? raw : await resolvedImage(raw);
+        if (!img.isConnected) return;
+        img.src = data;
+        await img.decode();
+        if (!img.isConnected) return;
+        img.classList.remove('missing-image');
+        delete img.dataset.renderError;
+        const status = document.getElementById('status');
+        if (status?.classList.contains('error') && status.textContent?.startsWith(`图片无法加载：${raw}`)) toast('');
+        return;
+      } catch (error) {
+        if (!img.isConnected) return;
+        imageDataCache.delete(raw);
+        if (attempt < 2) {
+          await new Promise(resolve => window.setTimeout(resolve, 400 * (attempt + 1)));
+          continue;
+        }
+        img.removeAttribute('src');
+        img.classList.add('missing-image');
+        img.dataset.renderError = `图片无法加载：${raw}（${error instanceof Error ? error.message : error}）`;
+        toast(img.dataset.renderError, true);
+      }
     }
   }));
 }
@@ -433,8 +460,8 @@ async function rasterizePrintDiagrams(container: HTMLElement) {
 function blockMarkup(block: Block, index: number, editable: boolean) {
   const sourceButton = !block.editable && editable ? '<button class="edit-source" data-action="editSource" title="编辑这段 Markdown 源码">编辑源码</button>' : '';
   if (editable && block.kind === 'code') {
-    const match = block.raw.match(/^\s*(`{3,}|~{3,})([^\n]*)\n?([\s\S]*?)\n?\s*\1\s*$/);
-    return `<section class="md-block direct-editor" data-index="${index}" data-line="${block.line}"><div class="block-content markdown-body"><pre class="hljs"><code contenteditable="true" spellcheck="false" data-direct="code">${esc(match?.[3] || '')}</code></pre></div></section>`;
+    const fence = md.parse(block.raw, {}).find(token => token.type === 'fence');
+    return `<section class="md-block direct-editor" data-index="${index}" data-line="${block.line}"><div class="block-content markdown-body">${codeFrameMarkup(fence?.content || '', fence?.info || '', true)}</div></section>`;
   }
   if (editable && block.kind === 'math') {
     const value = block.raw.replace(/^\s*\$\$\s*/, '').replace(/\s*\$\$\s*$/, '');
@@ -652,8 +679,13 @@ function scrollPreviewCursor() {
   const special = found && !inMetadata && (/^\s*\$\$/.test(found.block.raw) ? content.querySelector<HTMLElement>('.math-block') :
     imageIndex >= 0 ? content.querySelectorAll<HTMLElement>('img')[imageIndex] :
     mathIndex >= 0 ? content.querySelectorAll<HTMLElement>('.math-inline')[mathIndex] : null);
+  const code = found?.block.kind === 'code' ? content.querySelector<HTMLElement>('pre code') : null;
+  const codeStart = code && found ? Math.max(0, found.block.raw.indexOf('\n') + 1) : 0;
+  const codeOffset = code && found ? found.block.raw.slice(codeStart, Math.max(codeStart, found.offset - found.block.start))
+    .replace(/\r/g, '').length : 0;
   const target = special?.getBoundingClientRect() ||
-    (found && !inMetadata ? textRectAt(content, cursorTextOffset(found.block, content.textContent || '', found.offset)) : null) ||
+    (code ? textRectAt(code, codeOffset) : found && !inMetadata ?
+      textRectAt(content, cursorTextOffset(found.block, content.textContent || '', found.offset)) : null) ||
     content.getBoundingClientRect();
   const paneRect = pane.getBoundingClientRect();
   if (target.top >= paneRect.top + 24 && target.bottom <= paneRect.bottom - 24) return;
@@ -684,6 +716,39 @@ function onFocus(event: FocusEvent) {
   }
   updateTableTools();
 }
+function refreshEditableCode(code: HTMLElement) {
+  const selection = window.getSelection();
+  let caret: number | null = null;
+  if (selection?.anchorNode && code.contains(selection.anchorNode)) {
+    const before = document.createRange();
+    before.selectNodeContents(code);
+    before.setEnd(selection.anchorNode, selection.anchorOffset);
+    caret = before.toString().length;
+  }
+  const value = code.textContent || '';
+  const frame = code.closest<HTMLElement>('.code-frame');
+  code.innerHTML = highlightedCode(value, frame?.dataset.language || '');
+  const gutter = frame?.querySelector<HTMLElement>('.code-gutter');
+  if (gutter) gutter.textContent = Array.from({ length: value.replace(/\n$/, '').split('\n').length },
+    (_, index) => Number(frame?.dataset.lineStart || 1) + index).join('\n');
+  if (caret === null) return;
+  const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+  let remaining = caret, last: Text | null = null;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    last = node;
+    if (remaining > node.length) { remaining -= node.length; continue; }
+    const range = document.createRange();
+    range.setStart(node, remaining); range.collapse(true);
+    selection?.removeAllRanges(); selection?.addRange(range);
+    return;
+  }
+  const range = document.createRange();
+  if (last) range.setStart(last, last.length);
+  else range.selectNodeContents(code);
+  range.collapse(true);
+  selection?.removeAllRanges(); selection?.addRange(range);
+}
 function onInput(event: Event) {
   const target = event.target as HTMLElement;
   if (target.matches('input[type=checkbox]')) return;
@@ -701,7 +766,9 @@ function onInput(event: Event) {
       const preview = block.querySelector<HTMLElement>('.math-block');
       if (preview) preview.innerHTML = katex.renderToString((target as HTMLTextAreaElement).value, { displayMode: true, throwOnError: false, trust: false, output: 'html' });
     }
-    if (!target.matches('[data-direct]')) renderTypedMarkdown(block, input);
+    const code = target.closest<HTMLElement>('[data-direct="code"]');
+    if (code) refreshEditableCode(code);
+    if (!target.closest('[data-direct]')) renderTypedMarkdown(block, input);
     scheduleBlockSave(block);
   }
 }
@@ -954,7 +1021,7 @@ function serializeBlock(element: HTMLElement, original: Block) {
   if (original.kind === 'code') {
     const opener = original.raw.split(/\r?\n/, 1)[0] || '```text';
     const fence = opener.trimStart().match(/^(`{3,}|~{3,})/)?.[0] || '```';
-    const body = (element.querySelector('[data-direct="code"]')?.textContent || '').replace(/\r?\n/g, eol);
+    const body = (element.querySelector('[data-direct="code"]')?.textContent || '').replace(/\r?\n$/, '').replace(/\r?\n/g, eol);
     return finish(`${opener}${eol}${body}${eol}${fence}`);
   }
   if (original.kind === 'math') {
@@ -1913,6 +1980,35 @@ function textLineBottoms(element: HTMLElement): number[] {
   }
   return [...new Set(bottoms.map(value => Math.round(value * 10) / 10))].sort((a, b) => a - b);
 }
+function codeTextPoint(root: HTMLElement, offset: number): { node: Node; offset: number } {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let remaining = offset, last: Text | null = null;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    last = node;
+    if (remaining <= node.length) return { node, offset: remaining };
+    remaining -= node.length;
+  }
+  return last ? { node: last, offset: last.length } : { node: root, offset: 0 };
+}
+function setCodePageLines(target: HTMLElement, original: HTMLElement, lines: string[], first: number, last: number) {
+  const targetPre = target.querySelector('pre')!;
+  const originalPre = original.querySelector('pre')!;
+  const targetCode = targetPre.querySelector('code') || targetPre;
+  const originalCode = originalPre.querySelector('code') || originalPre;
+  const start = lines.slice(0, first).reduce((offset, line) => offset + line.length + 1, 0);
+  const end = start + lines.slice(first, last + 1).join('\n').length;
+  const range = document.createRange();
+  const from = codeTextPoint(originalCode, start), to = codeTextPoint(originalCode, end);
+  range.setStart(from.node, from.offset);
+  range.setEnd(to.node, to.offset);
+  targetCode.replaceChildren(range.cloneContents());
+  const gutter = target.querySelector<HTMLElement>('.code-gutter');
+  if (gutter) {
+    const startNumber = Number(target.querySelector<HTMLElement>('.code-frame')?.dataset.lineStart || 1);
+    gutter.textContent = lines.slice(first, last + 1).map((_, index) => String(startNumber + first + index)).join('\n');
+  }
+}
 async function paginate(revision: number, rebuild = false) {
   const host = document.getElementById('printHost')!;
   const layoutKey = JSON.stringify([exportSettings, settings.editorFontFamily, frontMatter.raw]);
@@ -2036,7 +2132,7 @@ async function paginate(revision: number, rebuild = false) {
         element.style.overflow = 'visible';
         continue;
       }
-      const lines = pre?.textContent?.includes('\n') ? pre.textContent.split('\n') : [];
+      const lines = pre?.textContent?.includes('\n') ? pre.textContent.replace(/\n$/, '').split('\n') : [];
       const canFlow = rows.length > 1 || lines.length > 1 || (!table && !pre && !!element.querySelector('p, blockquote, li'));
       if (content.children.length && !canFlow) nextPage(block.line);
       content.append(element);
@@ -2073,22 +2169,22 @@ async function paginate(revision: number, rebuild = false) {
       if (lines.length > 1) {
         content.removeChild(element);
         let current: HTMLElement | null = null;
-        for (const line of lines) {
+        let firstLine = 0;
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
           if (!current) {
             current = element.cloneNode(true) as HTMLElement;
-            current.querySelector('pre')!.textContent = '';
             content.append(current);
           }
-          const currentPre = current.querySelector('pre')!;
-          const old = currentPre.textContent || '';
-          currentPre.textContent = old + (old ? '\n' : '') + line;
+          setCodePageLines(current, element, lines, firstLine, lineIndex);
           if (content.scrollHeight > contentHeight() + 2) {
-            if (!old && content.children.length > 1) {
+            if (firstLine === lineIndex && content.children.length > 1) {
               current.remove(); nextPage(block.line); content.append(current);
-            } else if (old) {
-              currentPre.textContent = old; nextPage(block.line);
+            } else if (firstLine < lineIndex) {
+              setCodePageLines(current, element, lines, firstLine, lineIndex - 1);
+              nextPage(block.line);
               current = element.cloneNode(true) as HTMLElement;
-              current.querySelector('pre')!.textContent = line;
+              firstLine = lineIndex;
+              setCodePageLines(current, element, lines, firstLine, lineIndex);
               content.append(current);
             }
           }
