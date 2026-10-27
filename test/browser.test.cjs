@@ -886,6 +886,15 @@ test('triple-colon info blocks fold in preview and expand in PDF', async () => {
   await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
   await deliver(preview, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
   assert.deepEqual(await preview.locator('#documentBody details.admonition > summary').allTextContents(), ['信息', '自定义标题']);
+  const badges = await preview.locator('#documentBody details.admonition').evaluateAll(items => items.map(item => ({
+    icon: !!item.querySelector('summary svg.admonition-icon'),
+    border: getComputedStyle(item).borderLeftColor,
+    iconColor: getComputedStyle(item.querySelector('.admonition-icon')).color
+  })));
+  assert.deepEqual(badges, [
+    { icon: true, border: 'rgb(75, 141, 184)', iconColor: 'rgb(44, 121, 170)' },
+    { icon: true, border: 'rgb(201, 71, 71)', iconColor: 'rgb(201, 71, 71)' }
+  ]);
   assert.equal(await preview.locator('#documentBody .render-warning').count(), 0);
   await preview.locator('#documentBody details.admonition summary').first().click();
   assert.equal(await preview.locator('#documentBody details.admonition strong').textContent(), '重点');
@@ -902,6 +911,7 @@ test('triple-colon info blocks fold in preview and expand in PDF', async () => {
   await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
   assert.deepEqual(await pdf.locator('#printHost details.admonition').evaluateAll(items => items.map(item => item.open)), [true, true]);
   assert.equal(await pdf.locator('#printHost details.admonition li').count(), 2);
+  assert.equal(await pdf.locator('#printHost details.admonition svg.admonition-icon').count(), 2);
   await pdf.close();
 });
 
@@ -926,6 +936,28 @@ test('source cursor stays visible in split preview across headings, code, formul
     }, selector);
     assert.equal(visible, true, marker);
   }
+  await page.close();
+});
+
+test('split preview opens reference and automatic links once per click', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  const source = '[项目主页][project] 和 <https://github.com/>。\n\n[project]: https://github.com/\n';
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.evaluate(() => {
+    window.__NATIVE_LINK_CLICKS__ = 0;
+    document.addEventListener('click', event => {
+      if (event.target.closest('a[href]')) window.__NATIVE_LINK_CLICKS__++;
+    });
+  });
+  await page.locator('#documentBody a').first().click();
+  await page.locator('#documentBody a').nth(1).click();
+  const opened = await page.evaluate(() => ({
+    nativeClicks: window.__NATIVE_LINK_CLICKS__,
+    urls: window.__MDC_MESSAGES__.filter(message => message.type === 'openLink').map(message => message.url)
+  }));
+  assert.deepEqual(opened, { nativeClicks: 0, urls: ['https://github.com/', 'https://github.com/'] });
   await page.close();
 });
 
@@ -980,110 +1012,24 @@ test('split preview follows a long code line and text around many images after t
   await page.close();
 });
 
-test('source cursor follows the correct PDF page and position through long code, images, math, and HTML', async () => {
-  const lines = ['---', 'tag: cursor, pdf', '---', '# 起始标题', '', '第一页正文。', '', '<!-- pagebreak -->', '',
-    '## 长代码', '', '```txt', ...Array.from({ length: 75 }, (_, i) => `code-line-${String(i).padStart(3, '0')}`), '```', '',
-    '<!-- pagebreak -->', '', '$$', 'E = mc^2', '$$', '',
-    '图片前文字 ![行内图片](./logo.png) 图片后文字', '',
-    ...Array.from({ length: 12 }, (_, i) => [`![图片${i}](./logo.png)`, '']).flat(),
-    '<details>', '<summary>详细说明</summary>', '', 'HTML 内部文字。', '', '</details>'];
-  const source = lines.join('\n') + '\n';
+test('PDF cursor messages leave the user selected page and scroll position unchanged', async () => {
   const page = await browser.newPage({ viewport: { width: 980, height: 650 } });
   await page.goto(base + '/?mode=pdf');
   await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
-  const lateLine = lines.findIndex(value => value.includes('图片11'));
+  const source = ['# 第一页', '正文一。', '<!-- pagebreak -->', '## 第二页', '正文二。',
+    '<!-- pagebreak -->', '## 第三页', '正文三。'].join('\n\n') + '\n';
   await deliver(page, { type: 'document', source, version: 1, settings: { autoUpdate: true },
-    exportSettings: { paper: 'a5' }, templates: [], cursor: { line: lateLine, character: 4 } });
-  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'resolveImage'), { timeout: 5000 });
-  const requests = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage'));
-  const data = `data:image/png;base64,${fs.readFileSync(path.resolve(__dirname, '..', 'assets/logo.png')).toString('base64')}`;
-  for (const request of requests) await deliver(page, { type: 'imageResolved', id: request.id, data });
+    exportSettings: { paper: 'a5' }, templates: [], cursor: { line: 0, character: 2 } });
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
-  const initialTarget = await page.evaluate(() => {
-    const image = document.querySelector('#printHost img[alt="图片11"]');
-    return { expected: [...document.querySelectorAll('#printHost .print-page')].indexOf(image.closest('.print-page')) + 1,
-      current: Number(document.getElementById('pageInfo').textContent.split('/')[0].trim()) };
-  });
-  assert.equal(initialTarget.current, initialTarget.expected, 'a late cursor should be revealed as pages finish generating');
-  for (const [marker, selector, kind] of [
-    ['起始标题', 'h1', 'element'], ['code-line-045', 'pre', 'text'], ['E = mc^2', '.math-block', 'element'],
-    ['图片前文字', 'p', 'element'], ['行内图片', 'img[alt="行内图片"]', 'element'], ['图片后文字', 'p', 'element'],
-    ['图片0', 'img[alt="图片0"]', 'element'], ['图片7', 'img[alt="图片7"]', 'element'],
-    ['图片11', 'img[alt="图片11"]', 'element'], ['详细说明', 'details summary', 'element']
-  ]) {
-    const line = lines.findIndex(value => value.includes(marker));
-    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3) });
-    const position = await page.evaluate(({ marker, selector, kind }) => {
-      const elements = [...document.querySelectorAll(`#printHost ${selector}`)];
-      const element = kind === 'text' ? elements.find(item => item.textContent.includes(marker)) :
-        selector.startsWith('img') ? elements[0] : elements.find(item => item.textContent?.includes(marker)) || elements[0];
-      if (!element) return null;
-      let rect = element.getBoundingClientRect();
-      if (kind === 'text') {
-        const node = element.firstChild;
-        const index = node?.textContent?.indexOf(marker) ?? -1;
-        if (index >= 0) { const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + marker.length); rect = range.getBoundingClientRect(); }
-      }
-      const pages = [...document.querySelectorAll('#printHost .print-page')];
-      const paper = element.closest('.print-page');
-      const number = pages.indexOf(paper) + 1;
-      const slot = document.querySelector(`#pdfPages .pdf-page-slot[data-page="${number}"]`);
-      const viewport = document.getElementById('pdfPages').getBoundingClientRect();
-      const slotRect = slot?.getBoundingClientRect(), pageRect = paper.getBoundingClientRect();
-      const y = slotRect && slotRect.top + (rect.top + rect.height / 2 - pageRect.top) / pageRect.height * slotRect.height;
-      return { number, current: Number(document.getElementById('pageInfo').textContent.split('/')[0].trim()),
-        visible: y >= viewport.top + 20 && y <= viewport.bottom - 20, y, viewportTop: viewport.top, viewportBottom: viewport.bottom };
-    }, { marker, selector, kind });
-    assert.ok(position, marker);
-    assert.equal(position.current, position.number, JSON.stringify({ marker, position }));
-    assert.equal(position.visible, true, JSON.stringify({ marker, position }));
-  }
-  await page.close();
-});
-
-test('source cursor finds its rendered line inside a paragraph split across PDF pages', async () => {
-  const sentence = index => `第${String(index).padStart(3, '0')}句用于定位自动分页。`;
-  const paragraph = Array.from({ length: 400 }, (_, index) => sentence(index)).join('');
-  const source = `# 长段落\n\n${paragraph}\n`;
-  const page = await browser.newPage({ viewport: { width: 950, height: 620 } });
-  await page.goto(base + '/?mode=pdf');
-  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
-  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: { paper: 'a5' }, templates: [],
-    cursor: { line: 2, character: paragraph.indexOf(sentence(320)) + 5 } });
-  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
-  for (const index of [320, 180, 40]) {
-    await deliver(page, { type: 'cursorPosition', line: 2, character: paragraph.indexOf(sentence(index)) + 5 });
-    const actual = await page.evaluate(marker => {
-      const fragments = [...document.querySelectorAll('#printHost .print-fragment')];
-      const master = fragments[0].firstElementChild;
-      const textIndex = master.textContent.indexOf(marker);
-      const walker = document.createTreeWalker(master, NodeFilter.SHOW_TEXT);
-      let remaining = textIndex, rect;
-      while (walker.nextNode()) {
-        const node = walker.currentNode;
-        if (remaining >= node.textContent.length) { remaining -= node.textContent.length; continue; }
-        const range = document.createRange(); range.setStart(node, remaining); range.setEnd(node, remaining + 1);
-        rect = range.getBoundingClientRect(); break;
-      }
-      const local = rect.top - master.getBoundingClientRect().top;
-      const fragment = fragments.find(item => {
-        const start = -parseFloat(item.firstElementChild.style.top || '0');
-        return local >= start - 1 && local < start + item.getBoundingClientRect().height + 1;
-      });
-      const paper = fragment?.closest('.print-page');
-      const number = [...document.querySelectorAll('#printHost .print-page')].indexOf(paper) + 1;
-      const container = document.getElementById('pdfPages').getBoundingClientRect();
-      const slot = document.querySelector(`#pdfPages .pdf-page-slot[data-page="${number}"]`).getBoundingClientRect();
-      const start = -parseFloat(fragment.firstElementChild.style.top || '0');
-      const point = fragment.getBoundingClientRect().top + local - start - paper.getBoundingClientRect().top;
-      const y = slot.top + point / paper.getBoundingClientRect().height * slot.height;
-      return { number, current: Number(document.getElementById('pageInfo').textContent.split('/')[0].trim()),
-        visible: y > container.top + 20 && y < container.bottom - 20 };
-    }, sentence(index));
-    assert.ok(actual.number > 0, JSON.stringify({ index, actual }));
-    assert.equal(actual.current, actual.number, JSON.stringify({ index, actual }));
-    assert.equal(actual.visible, true, JSON.stringify({ index, actual }));
-  }
+  await page.locator('[data-action="next"]').click();
+  await page.locator('[data-action="next"]').click();
+  const before = await page.evaluate(() => ({ page: document.getElementById('pageInfo').textContent,
+    scroll: document.getElementById('pdfPages').scrollTop }));
+  await deliver(page, { type: 'cursorPosition', line: 0, character: 2 });
+  await deliver(page, { type: 'cursorPosition', line: 6, character: 2 });
+  const after = await page.evaluate(() => ({ page: document.getElementById('pageInfo').textContent,
+    scroll: document.getElementById('pdfPages').scrollTop }));
+  assert.deepEqual(after, before);
   await page.close();
 });
 
@@ -1141,12 +1087,12 @@ test('pagination stays live with PDF auto update off and preserves earlier pages
   await deliver(page, { type: 'documentChanged', source: changed.replace('后面的内容。', '后面的新内容。'), version: 3 });
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
     [...document.querySelectorAll('#pdfPages .pdf-page-slot')].some((slot, index) => index > 0 &&
-      window.__OLD_PDF_SLOTS__[index] !== slot), { timeout: 30000 });
+      window.__OLD_PDF_SLOTS__[index] === slot && slot.dataset.state === 'ready'), { timeout: 30000 });
   assert.equal(await page.evaluate(() => window.__FIRST_PDF_CANVAS__ === document.querySelector('#pdfPages canvas')), true);
   await page.close();
 });
 
-test('an edit on page five hides its suffix and reveals each regenerated page', async () => {
+test('an edit on page five keeps the scroll position and reveals each regenerated page in place', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');
   await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
@@ -1157,15 +1103,22 @@ test('an edit on page five hides its suffix and reveals each regenerated page', 
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
   assert.equal(await page.locator('#pdfPages .pdf-page-slot').count(), 6);
   assert.equal(await page.locator('#printHost .print-page-number').first().textContent(), '1');
+  await page.locator('#pdfPages .pdf-page-slot[data-page="6"]').scrollIntoViewIfNeeded();
   await page.evaluate(() => {
     window.__OLD_SLOTS__ = [...document.querySelectorAll('#pdfPages .pdf-page-slot')];
-    window.__SLOT_COUNTS__ = [];
+    window.__FIRST_PDF_CANVAS__ = window.__OLD_SLOTS__[0].querySelector('canvas');
+    window.__PREVIOUS_SCROLL__ = document.getElementById('pdfPages').scrollTop;
     window.__CAPTURE_COUNT__ = 0;
-    new MutationObserver(() => window.__SLOT_COUNTS__.push(document.querySelectorAll('#pdfPages .pdf-page-slot').length))
-      .observe(document.getElementById('pdfPages'), { childList: true });
+    window.__CAPTURE_STATES__ = [];
+    window.__CAPTURE_PROGRESS__ = [];
     const original = HTMLCanvasElement.prototype.toDataURL;
     HTMLCanvasElement.prototype.toDataURL = function (...args) {
       window.__CAPTURE_COUNT__++;
+      window.__CAPTURE_STATES__.push([...document.querySelectorAll('#pdfPages .pdf-page-slot')]
+        .map(slot => slot.dataset.state));
+      const active = document.querySelector('#pdfPages .pdf-page-slot[data-state="generating"]');
+      window.__CAPTURE_PROGRESS__.push(!!active?.querySelector('progress') &&
+        getComputedStyle(active.querySelector('progress')).display !== 'none');
       return original.apply(this, args);
     };
   });
@@ -1173,18 +1126,30 @@ test('an edit on page five hides its suffix and reveals each regenerated page', 
   await deliver(page, { type: 'documentChanged', source: sections.join('\n\n<!-- pagebreak -->\n\n') + '\n', version: 2 });
   const immediate = await page.evaluate(() => ({
     count: document.querySelectorAll('#pdfPages .pdf-page-slot').length,
-    kept: window.__OLD_SLOTS__.slice(0, 4).every((slot, i) => slot === document.querySelectorAll('#pdfPages .pdf-page-slot')[i])
+    kept: window.__OLD_SLOTS__.slice(0, 4).every((slot, i) => slot === document.querySelectorAll('#pdfPages .pdf-page-slot')[i]),
+    states: [...document.querySelectorAll('#pdfPages .pdf-page-slot')].slice(4).map(slot => slot.dataset.state),
+    scrollUnchanged: Math.abs(document.getElementById('pdfPages').scrollTop - window.__PREVIOUS_SCROLL__) <= 1
   }));
-  assert.deepEqual(immediate, { count: 4, kept: true });
+  assert.deepEqual(immediate, { count: 6, kept: true, states: ['waiting', 'waiting'], scrollUnchanged: true });
+  await page.evaluate(() => { document.getElementById('pdfPages').scrollTop -= 100; });
+  const userScroll = await page.evaluate(() => document.getElementById('pdfPages').scrollTop);
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
     document.querySelectorAll('#pdfPages .pdf-page-slot').length === 6, { timeout: 30000 });
-  const final = await page.evaluate(() => ({ counts: window.__SLOT_COUNTS__, captures: window.__CAPTURE_COUNT__,
+  const final = await page.evaluate(userScroll => ({ captures: window.__CAPTURE_COUNT__, captureStates: window.__CAPTURE_STATES__,
+    captureProgress: window.__CAPTURE_PROGRESS__,
     kept: window.__OLD_SLOTS__.slice(0, 4).every((slot, i) => slot === document.querySelectorAll('#pdfPages .pdf-page-slot')[i]),
-    replaced: window.__OLD_SLOTS__[4] !== document.querySelectorAll('#pdfPages .pdf-page-slot')[4] }));
-  assert.ok(final.counts.includes(5) && final.counts.includes(6), JSON.stringify(final));
+    firstCanvasKept: window.__FIRST_PDF_CANVAS__ === document.querySelector('#pdfPages canvas'),
+    allReady: [...document.querySelectorAll('#pdfPages .pdf-page-slot')].every(slot => slot.dataset.state === 'ready'),
+    slotsKept: window.__OLD_SLOTS__.every((slot, i) => slot === document.querySelectorAll('#pdfPages .pdf-page-slot')[i]),
+    scrollUnchanged: Math.abs(document.getElementById('pdfPages').scrollTop - userScroll) <= 1 }), userScroll);
   assert.equal(final.captures, 2);
   assert.equal(final.kept, true);
-  assert.equal(final.replaced, true);
+  assert.equal(final.firstCanvasKept, true);
+  assert.equal(final.allReady, true);
+  assert.equal(final.slotsKept, true);
+  assert.equal(final.scrollUnchanged, true);
+  assert.ok(final.captureStates.some(states => states[4] === 'generating' && states[5] === 'waiting'), JSON.stringify(final));
+  assert.ok(final.captureProgress.every(Boolean), JSON.stringify(final));
   await page.evaluate(() => {
     window.__FIRST_SLOT_BEFORE_PAGE_COUNT_CHANGE__ = document.querySelector('#pdfPages .pdf-page-slot');
     window.__CAPTURE_COUNT__ = 0;
@@ -1233,9 +1198,12 @@ test('editing page five inside one automatically split paragraph keeps earlier P
   const immediate = await page.evaluate(() => ({
     count: document.querySelectorAll('#pdfPages .pdf-page-slot').length,
     prefixKept: window.__OLD_PDF_SLOTS__.slice(0, 4).every((slot, index) =>
-      slot === document.querySelectorAll('#pdfPages .pdf-page-slot')[index])
+      slot === document.querySelectorAll('#pdfPages .pdf-page-slot')[index]),
+    affectedWaiting: [...document.querySelectorAll('#pdfPages .pdf-page-slot')].slice(4).every(slot => slot.dataset.state === 'waiting')
   }));
-  assert.deepEqual(immediate, { count: 4, prefixKept: true });
+  assert.ok(immediate.count > 4);
+  assert.equal(immediate.prefixKept, true);
+  assert.equal(immediate.affectedWaiting, true);
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
     document.querySelectorAll('#pdfPages .pdf-page-slot').length > 4, { timeout: 30000 });
   const final = await page.evaluate(() => ({
@@ -1271,7 +1239,9 @@ test('manual PDF update regenerates only changed pages after live pagination', a
     };
   });
   await deliver(page, { type: 'documentChanged', source: source.replace('第二页。', '第二页已修改。'), version: 2 });
-  assert.equal(await page.locator('#pdfPages .pdf-page-slot').count(), 1);
+  assert.equal(await page.locator('#pdfPages .pdf-page-slot').count(), 3);
+  assert.deepEqual(await page.locator('#pdfPages .pdf-page-slot').evaluateAll(slots =>
+    slots.map(slot => slot.dataset.state)), ['ready', 'waiting', 'waiting']);
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('分页已更新'), { timeout: 30000 });
   await page.locator('[data-action="refresh"]').click();
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
@@ -1409,7 +1379,21 @@ test('PDF preserves the complete sum formula and Mermaid labels from the demo do
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   const source = fs.readFileSync(path.resolve(__dirname, '../examples/demo.md'), 'utf8');
   await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.filter(message => message.type === 'resolveImage').length >= 2);
+  const requests = await page.evaluate(() => window.__MDC_MESSAGES__.filter(message => message.type === 'resolveImage'));
+  const imageData = `data:image/png;base64,${fs.readFileSync(path.resolve(__dirname, '..', 'assets/logo.png')).toString('base64')}`;
+  for (const request of requests) await deliver(page, { type: 'imageResolved', id: request.id, data: imageData });
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const syntax = await page.evaluate(() => ({
+    tags: document.querySelectorAll('#documentBody .document-tag').length,
+    images: document.querySelectorAll('#printHost img:not(.print-diagram)').length,
+    highlight: !!document.querySelector('#documentBody mark'),
+    htmlDetailsOpen: document.querySelector('#printHost details:not(.admonition)')?.open,
+    infoOpen: document.querySelector('#printHost details.admonition-info')?.open,
+    warningOpen: document.querySelector('#printHost details.admonition-warning')?.open
+  }));
+  assert.deepEqual(syntax, { tags: 3, images: 2, highlight: true,
+    htmlDetailsOpen: true, infoOpen: true, warningOpen: true });
   const ink = await page.evaluate(() => {
     const countInk = (image, xStart, xEnd, yStart, yEnd) => {
       const canvas = document.createElement('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;

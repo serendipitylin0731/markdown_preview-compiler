@@ -53,9 +53,13 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .markdown-body summary { cursor: pointer; font-weight: 600; }
 .markdown-body details[open] > summary { margin-bottom: .6em; }
 .markdown-body details.admonition { border-left: 4px solid #4b8db8; background: #eaf4fb; color: #20242a; }
-.markdown-body details.admonition-warning, .markdown-body details.admonition-caution { border-left-color: #bd8424; background: #fff5de; }
+.markdown-body details.admonition-warning { border-left-color: #c94747; background: #fff0ef; }
+.markdown-body details.admonition-caution { border-left-color: #bd8424; background: #fff5de; }
 .markdown-body details.admonition-danger { border-left-color: #bf5454; background: #fff0ee; }
 .markdown-body details.admonition-tip, .markdown-body details.admonition-success { border-left-color: #438b68; background: #eaf7ef; }
+.markdown-body .admonition-icon { width: 17px; height: 17px; margin-right: 7px; vertical-align: -3px; }
+.markdown-body .admonition-info .admonition-icon { color: #2c79aa; }
+.markdown-body .admonition-warning .admonition-icon { color: #c94747; }
 .markdown-body hr { border: none; border-top: 1px solid var(--vscode-panel-border, #aaa); }
 .markdown-body .hljs { color: var(--vscode-editor-foreground); }
 .md-block { position: relative; }
@@ -81,9 +85,15 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .pdf-controls { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; padding: 7px; border-bottom: 1px solid var(--vscode-panel-border, #8886); }
 .pdf-controls label { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
 .pdf-status { min-height: 23px; font-size: 12px; padding: 3px 8px; opacity: .8; }
-.pdf-pages { flex: 1; min-height: 0; overflow: auto; text-align: center; padding: 16px; }
-.pdf-page-slot { margin: 0 auto 16px; box-shadow: 0 2px 13px #0005; background: white; }
+.pdf-pages { flex: 1; min-height: 0; overflow: auto; text-align: center; padding: 16px; overflow-anchor: none; }
+.pdf-page-slot { position: relative; margin: 0 auto 16px; box-shadow: 0 2px 13px #0005; background: white; }
 .pdf-page-slot canvas { display: block; max-width: none; }
+.pdf-page-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 12px; color: #6b7481; font: 14px/1.5 system-ui, sans-serif; }
+.pdf-page-error { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; color: #b33; }
+.pdf-page-glyph { font-size: 40px; line-height: 1; color: #a7b0bc; }
+.pdf-page-progress { width: min(45%, 180px); height: 5px; accent-color: #4b8db8; }
+.pdf-page-slot:not([data-state="generating"]) .pdf-page-progress { display: none; }
 #status { height: 33px; padding: 7px 10px; font-size: 12px; border-top: 1px solid var(--vscode-panel-border, #8886); white-space: nowrap; overflow: hidden; }
 #status.error { color: var(--vscode-errorForeground, #c44); }
 .dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: #0008; }

@@ -389,7 +389,7 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.window.onDidChangeTextEditorSelection(event => {
       for (const state of panels) if (state.uri.toString() === event.textEditor.document.uri.toString() &&
-        (state.mode === 'pdf' || state.mode === 'preview' && settings(state.uri).syncScroll))
+        state.mode === 'preview' && settings(state.uri).syncScroll)
         post(state, { type: 'cursorPosition', line: event.selections[0].active.line,
           character: event.selections[0].active.character });
     }),

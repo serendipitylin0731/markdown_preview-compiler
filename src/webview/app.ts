@@ -123,7 +123,9 @@ md.renderer.rules.admonition = (tokens, i) => {
   const { kind, title } = tokens[i].meta;
   const labels: Record<string, string> = { info: '信息', note: '备注', tip: '提示', warning: '警告', danger: '危险',
     success: '成功', question: '问题', example: '示例', abstract: '摘要', important: '重要', caution: '注意' };
-  return `<details class="admonition admonition-${kind}"><summary>${esc(title || labels[kind] || kind)}</summary>${md.render(tokens[i].content)}</details>`;
+  const icon = kind === 'info' ? '<svg class="admonition-icon" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><path d="M10 9v5M10 5.7v.8" stroke-linecap="round"/></svg>' :
+    kind === 'warning' ? '<svg class="admonition-icon" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 2.7a1.2 1.2 0 0 1 2 0l7.2 12.4a1.3 1.3 0 0 1-1.1 1.9H2.9a1.3 1.3 0 0 1-1.1-1.9L9 2.7Z"/><path d="M10 7v4.5M10 14v.3" stroke-linecap="round"/></svg>' : '';
+  return `<details class="admonition admonition-${kind}"><summary>${icon}${esc(title || labels[kind] || kind)}</summary>${md.render(tokens[i].content)}</details>`;
 };
 const originalFence = md.renderer.rules.fence;
 md.renderer.rules.fence = (tokens, i, options, env, self) => {
@@ -198,9 +200,8 @@ let pdfPreviewImages: string[] = [];
 let pdfPreviewSize: [number, number] = [210, 297];
 let renderedPageRefs: HTMLElement[] = [];
 let pdfObserver: IntersectionObserver | null = null;
-let pdfRenderToken = 0;
+const pdfSlotRenders = new WeakMap<HTMLElement, Promise<void>>();
 let pdfPage = 1;
-let pdfCursorTarget: { pageIndex: number; fraction: number } | null = null;
 let pdfScale = 1;
 let pdfBusy = false;
 let pdfQueued = false;
@@ -213,7 +214,6 @@ let layoutPages: HTMLElement[] = [];
 let layoutBlocks: string[] = [];
 let layoutBlockLines: number[] = [];
 let layoutSettings = '';
-let layoutRevision = -1;
 let retainedPageGeometry: string[] = [];
 const imageSession = Date.now().toString(36) + Math.random().toString(36).slice(2);
 let imageRequestSerial = 0;
@@ -501,20 +501,7 @@ function buildShell() {
   pdfPages?.addEventListener('scroll', () => {
     const slots = [...pdfPages.querySelectorAll<HTMLElement>('.pdf-page-slot')];
     if (slots.length) {
-      const viewport = pdfPages.getBoundingClientRect();
-      const top = viewport.top + 80;
-      if (pdfCursorTarget) {
-        const targetSlot = slots[pdfCursorTarget.pageIndex];
-        if (targetSlot) {
-          const rect = targetSlot.getBoundingClientRect();
-          const y = rect.top + pdfCursorTarget.fraction * rect.height;
-          if (y >= viewport.top + 20 && y <= viewport.bottom - 20) {
-            pdfPage = pdfCursorTarget.pageIndex + 1;
-            updatePageInfo();
-            return;
-          }
-        }
-      }
+      const top = pdfPages.getBoundingClientRect().top + 80;
       const nearest = slots.findIndex(slot => slot.getBoundingClientRect().bottom > top);
       if (nearest >= 0) { pdfPage = nearest + 1; updatePageInfo(); }
     }
@@ -1505,6 +1492,8 @@ function onClick(event: MouseEvent) {
   }
   const link = (event.target as HTMLElement).closest('a[href]') as HTMLAnchorElement | null;
   if (link) {
+    // VS Code also handles clicks on webview anchors at document level.
+    event.stopPropagation();
     const href = link.getAttribute('href') || '';
     if (mode === 'visual' && link.closest('.md-block')) {
       event.preventDefault();
@@ -1899,8 +1888,6 @@ async function paginate(revision: number, rebuild = false) {
   const firstChanged = firstChangedBlock();
   if (!rebuild && layoutSettings === layoutKey && layoutPages.length && layoutPages.every(page => page.isConnected)) {
     if (firstChanged < 0) {
-      layoutRevision = revision;
-      syncPdfCursor();
       markPageBoundaries();
       return layoutPages;
     }
@@ -1992,7 +1979,6 @@ async function paginate(revision: number, rebuild = false) {
     }
     for (const element of splitImageParagraphs(makePrintBlock(block))) {
       element.dataset.blockIndex = String(blockIndex);
-      if (block.kind === 'code') element.dataset.codeStartLine = '0';
       content.append(element);
       await localizeImages(element);
       if (revision !== pdfRevision) return [];
@@ -2056,10 +2042,9 @@ async function paginate(revision: number, rebuild = false) {
       if (lines.length > 1) {
         content.removeChild(element);
         let current: HTMLElement | null = null;
-        for (const [lineIndex, line] of lines.entries()) {
+        for (const line of lines) {
           if (!current) {
             current = element.cloneNode(true) as HTMLElement;
-            current.dataset.codeStartLine = String(lineIndex);
             current.querySelector('pre')!.textContent = '';
             content.append(current);
           }
@@ -2072,7 +2057,6 @@ async function paginate(revision: number, rebuild = false) {
             } else if (old) {
               currentPre.textContent = old; nextPage(block.line);
               current = element.cloneNode(true) as HTMLElement;
-              current.dataset.codeStartLine = String(lineIndex);
               current.querySelector('pre')!.textContent = line;
               content.append(current);
             }
@@ -2132,9 +2116,8 @@ async function paginate(revision: number, rebuild = false) {
   layoutBlocks = blocks.map(block => block.raw);
   layoutBlockLines = blocks.map(block => block.line);
   layoutSettings = layoutKey;
-  layoutRevision = revision;
   reconcileRetainedPages(pages);
-  syncPdfCursor();
+  syncPdfPageSlots(pages.length);
   markPageBoundaries();
   post('pageBoundaries', { boundaries: showBreaks ? boundaries : [] });
   return pages;
@@ -2224,113 +2207,6 @@ function affectedPdfPage(force: boolean) {
   const affected = Math.min(changed, layoutBlocks.length - 1);
   return changedTextPage(affected) ?? pageContainingBlockOrPrevious(affected);
 }
-type PdfCursorPoint = { pageIndex: number; y: number };
-function pdfPoint(pageIndex: number, rect: DOMRect): PdfCursorPoint {
-  const page = layoutPages[pageIndex];
-  return { pageIndex, y: rect.top + rect.height / 2 - page.getBoundingClientRect().top };
-}
-function pdfFragmentPoint(entries: Array<{ element: HTMLElement; pageIndex: number }>, master: HTMLElement, rect: DOMRect): PdfCursorPoint | null {
-  const offset = rect.top + rect.height / 2 - master.getBoundingClientRect().top;
-  const fragments = entries.filter(entry => entry.element.classList.contains('print-fragment'));
-  const match = fragments.find(({ element }) => {
-    const start = -parseFloat((element.firstElementChild as HTMLElement).style.top || '0');
-    return offset >= start - 1 && offset < start + element.getBoundingClientRect().height + 1;
-  }) || fragments.at(-1);
-  if (!match) return null;
-  const start = -parseFloat((match.element.firstElementChild as HTMLElement).style.top || '0');
-  const fragmentRect = match.element.getBoundingClientRect();
-  return pdfPoint(match.pageIndex, new DOMRect(fragmentRect.left, fragmentRect.top + offset - start, 0, 0));
-}
-function pdfElementPoint(entries: Array<{ element: HTMLElement; pageIndex: number }>, element: HTMLElement): PdfCursorPoint | null {
-  const owner = entries.find(entry => entry.element.contains(element));
-  if (!owner) return null;
-  if (owner.element.classList.contains('print-fragment'))
-    return pdfFragmentPoint(entries, owner.element.firstElementChild as HTMLElement, element.getBoundingClientRect());
-  return pdfPoint(owner.pageIndex, element.getBoundingClientRect());
-}
-function pdfCursorPoint(): PdfCursorPoint | null {
-  if (!cursorPosition || !layoutPages.length) return null;
-  if (frontMatter.raw && cursorPosition.line < frontMatter.bodyLine) {
-    const tag = layoutPages[0].querySelector<HTMLElement>('.document-tags');
-    return tag ? pdfPoint(0, tag.getBoundingClientRect()) : { pageIndex: 0, y: 0 };
-  }
-  const found = cursorBlock();
-  if (!found) return { pageIndex: 0, y: 0 };
-  const entries = layoutPages.flatMap((page, pageIndex) =>
-    [...page.querySelectorAll<HTMLElement>(`.print-content > [data-block-index="${found.index}"]`)]
-      .map(element => ({ element, pageIndex })));
-  if (!entries.length) {
-    const previous = Math.max(0, Math.min(layoutPages.length - 1, pageContainingBlockOrPrevious(found.index)));
-    return { pageIndex: previous, y: 0 };
-  }
-  if (found.block.kind === 'code') {
-    const line = Math.max(0, found.line - found.block.line - 1);
-    const current = entries.find(({ element }) => {
-      const pre = element.querySelector('pre');
-      const start = Number(element.dataset.codeStartLine || 0);
-      return pre && line >= start && line < start + (pre.textContent || '').split('\n').length;
-    }) || entries.at(-1)!;
-    const pre = current.element.querySelector<HTMLElement>('pre');
-    if (pre) {
-      const lines = (pre.textContent || '').split('\n');
-      const local = Math.max(0, Math.min(lines.length - 1, line - Number(current.element.dataset.codeStartLine || 0)));
-      const character = Math.min(lines[local].length, found.offset - (sourceOffsets(source)[found.line] || 0));
-      const position = lines.slice(0, local).reduce((total, value) => total + value.length + 1, 0) + Math.max(0, character);
-      return pdfPoint(current.pageIndex, textRectAt(pre, position) || pre.getBoundingClientRect());
-    }
-  }
-  if (found.block.kind === 'math') {
-    const math = entries[0].element.querySelector<HTMLElement>('.math-block');
-    if (math) return pdfElementPoint(entries, math);
-  }
-  const imageIndex = imageIndexAtCursor(found.block, found.offset);
-  if (imageIndex >= 0) {
-    const images = entries.flatMap(entry => [...entry.element.querySelectorAll<HTMLImageElement>('img')]);
-    const image = images[imageIndex] || images[0];
-    if (image) return pdfElementPoint(entries, image);
-  }
-  const mathIndex = inlineMathIndexAtCursor(found.block, found.offset);
-  if (mathIndex >= 0) {
-    const math = entries.find(entry => entry.element.classList.contains('print-fragment'))?.element.firstElementChild as HTMLElement || entries[0].element;
-    const inline = math.querySelectorAll<HTMLElement>('.math-inline')[mathIndex];
-    if (inline) return pdfElementPoint(entries, inline);
-  }
-  const fragment = entries.find(entry => entry.element.classList.contains('print-fragment'));
-  if (fragment) {
-    const master = fragment.element.firstElementChild as HTMLElement;
-    const text = master.textContent || '';
-    const rect = textRectAt(master, cursorTextOffset(found.block, text, found.offset));
-    if (rect) return pdfFragmentPoint(entries, master, rect);
-  }
-  const texts = entries.map(entry => entry.element.textContent || '');
-  const allText = texts.join('\n');
-  let offset = cursorTextOffset(found.block, allText, found.offset);
-  for (let i = 0; i < entries.length; i++) {
-    if (offset <= texts[i].length || i === entries.length - 1) {
-      const rect = textRectAt(entries[i].element, offset) || entries[i].element.getBoundingClientRect();
-      return pdfPoint(entries[i].pageIndex, rect);
-    }
-    offset -= texts[i].length + 1;
-  }
-  return pdfPoint(entries[0].pageIndex, entries[0].element.getBoundingClientRect());
-}
-function syncPdfCursor() {
-  if (mode !== 'pdf' || !cursorPosition || layoutRevision !== pdfRevision) return;
-  const target = pdfCursorPoint();
-  if (!target) return;
-  const container = document.getElementById('pdfPages');
-  const slot = container?.querySelector<HTMLElement>(`.pdf-page-slot[data-page="${target.pageIndex + 1}"]`);
-  const paper = layoutPages[target.pageIndex];
-  if (!container || !slot || !paper) return;
-  const slotTop = slot.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
-  const fraction = Math.max(0, Math.min(1, target.y / Math.max(1, paper.getBoundingClientRect().height)));
-  pdfCursorTarget = { pageIndex: target.pageIndex, fraction };
-  const position = slotTop + fraction * slot.getBoundingClientRect().height;
-  if (position < container.scrollTop + 32 || position > container.scrollTop + container.clientHeight - 32)
-    container.scrollTop = Math.max(0, Math.min(position - container.clientHeight * .45, container.scrollHeight - container.clientHeight));
-  pdfPage = target.pageIndex + 1;
-  updatePageInfo();
-}
 function markPageBoundaries() {
   document.querySelectorAll('#documentBody .page-boundary').forEach(el => el.remove());
   if (!showBreaks) return;
@@ -2347,10 +2223,12 @@ function markPageBoundaries() {
 function schedulePdf(rebuild = false, generateNow = false) {
   if (!(mode === 'pdf' || rebuild || generateNow || autoExport)) return;
   const revision = ++pdfRevision;
-  pdfCursorTarget = null;
   pdfDirty = true;
   pdfBytes = null;
+  const status = document.getElementById('pdfStatus');
+  if (status && mode === 'pdf') status.textContent = '正在分页…';
   discardPdfPagesFrom(affectedPdfPage(rebuild));
+  if (mode === 'pdf' && !document.querySelector('#pdfPages .pdf-page-slot')) syncPdfPageSlots(1);
   retainedPageGeometry = layoutPages.slice(0, pdfPreviewImages.length).map(pageGeometry);
   window.clearTimeout(layoutTimer);
   resolveLayout?.([]);
@@ -2381,11 +2259,14 @@ function schedulePdf(rebuild = false, generateNow = false) {
     pdfTimer = window.setTimeout(() => void generatePdf(), rebuild || generateNow ? 0 : 80);
 }
 function discardPdfPagesFrom(index: number) {
-  if (index >= pdfPreviewImages.length) return;
-  pdfPreviewImages.length = index;
+  pdfPreviewImages.length = Math.min(pdfPreviewImages.length, index);
   renderedPageRefs.length = Math.min(renderedPageRefs.length, index);
   pdfBytes = null;
-  void renderPdfPages(index);
+  const slots = document.querySelectorAll<HTMLElement>('#pdfPages .pdf-page-slot');
+  slots.forEach((slot, slotIndex) => {
+    if (slotIndex >= index) setPdfSlotState(slot, 'waiting');
+  });
+  updatePageInfo();
 }
 // html2canvas clones the document into an iframe. In VS Code webviews, linked CSS can fail
 // to load there, so preserve the computed print layout on the captured nodes themselves.
@@ -2441,6 +2322,7 @@ async function generatePdf() {
     }
     if (reusablePages < pdfPreviewImages.length) discardPdfPagesFrom(reusablePages);
     pdfPreviewSize = [width, height];
+    syncPdfPageSlots(pages.length);
     for (let i = 0; i < pages.length; i++) {
       if (!current()) return;
       if (i) pdf.addPage([width, height], exportSettings.orientation);
@@ -2449,6 +2331,8 @@ async function generatePdf() {
       let image: string;
       if (i < reusablePages) image = pdfPreviewImages[i];
       else {
+        const slot = document.querySelector<HTMLElement>(`#pdfPages .pdf-page-slot[data-page="${i + 1}"]`);
+        if (slot) setPdfSlotState(slot, 'generating');
         freezePrintStyles(page);
         const canvas = await html2canvas(page, { scale: 2, useCORS: true, allowTaint: false, backgroundColor: '#fff', logging: false,
           width: page.offsetWidth, height: page.offsetHeight, windowWidth: page.offsetWidth, windowHeight: page.offsetHeight });
@@ -2467,7 +2351,12 @@ async function generatePdf() {
       if (i >= reusablePages) {
         pdfPreviewImages.push(image);
         renderedPageRefs.push(page);
-        await renderPdfPages(i);
+        const slot = document.querySelector<HTMLElement>(`#pdfPages .pdf-page-slot[data-page="${i + 1}"]`);
+        const container = document.getElementById('pdfPages');
+        if (slot && container) {
+          setPdfSlotState(slot, 'ready');
+          if (pdfSlotNearViewport(slot, container)) await renderPdfSlot(slot);
+        }
         if (!current()) return;
       }
       await new Promise(resolve => setTimeout(resolve, 0));
@@ -2491,73 +2380,124 @@ async function generatePdf() {
     if (pdfQueued) void generatePdf();
   }
 }
-async function renderPdfPages(reusablePages = 0) {
+function setPdfSlotState(slot: HTMLElement, state: 'waiting' | 'generating' | 'ready') {
+  if (slot.dataset.state === state && slot.querySelector('.pdf-page-placeholder')) return;
+  slot.dataset.state = state;
+  slot.querySelector('canvas')?.remove();
+  slot.querySelector('.pdf-page-error')?.remove();
+  let placeholder = slot.querySelector<HTMLElement>('.pdf-page-placeholder');
+  if (!placeholder) {
+    placeholder = document.createElement('div');
+    placeholder.className = 'pdf-page-placeholder';
+    placeholder.innerHTML = '<span class="pdf-page-glyph" aria-hidden="true">▤</span><span class="pdf-page-label"></span><progress class="pdf-page-progress"></progress>';
+    slot.append(placeholder);
+  }
+  const number = Number(slot.dataset.page);
+  const total = document.querySelectorAll('#pdfPages .pdf-page-slot').length;
+  placeholder.querySelector<HTMLElement>('.pdf-page-label')!.textContent =
+    state === 'generating' ? `第 ${number} / ${total} 页 · 正在生成` :
+    state === 'ready' ? `第 ${number} 页 · 已生成` : `第 ${number} 页 · 等待生成`;
+}
+function pdfSlotNearViewport(slot: HTMLElement, container: HTMLElement) {
+  const viewport = container.getBoundingClientRect();
+  const rect = slot.getBoundingClientRect();
+  return rect.bottom >= viewport.top - 700 && rect.top <= viewport.bottom + 700;
+}
+function syncPdfPageSlots(total: number) {
   const container = document.getElementById('pdfPages');
   if (!container) return;
-  pdfObserver?.disconnect();
-  const token = ++pdfRenderToken;
-  const retained = [...container.querySelectorAll<HTMLElement>('.pdf-page-slot')].slice(0, reusablePages);
-  if (retained.length !== reusablePages) reusablePages = 0;
-  if (!reusablePages) container.innerHTML = '';
-  else [...container.querySelectorAll<HTMLElement>('.pdf-page-slot')].slice(reusablePages).forEach(slot => slot.remove());
-  pdfPage = Math.max(1, Math.min(pdfPage, pdfPreviewImages.length));
-  if (!pdfPreviewImages.length) { pdfObserver = null; updatePageInfo(); return; }
-  pdfObserver = new IntersectionObserver(entries => {
-    for (const entry of entries) if (entry.isIntersecting)
-      void renderPdfSlot(entry.target as HTMLElement, token);
+  if (!pdfObserver) pdfObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) if (entry.isIntersecting) void renderPdfSlot(entry.target as HTMLElement);
   }, { root: container, rootMargin: '700px 0px' });
-  for (let i = 1; i <= pdfPreviewImages.length; i++) {
-    if (i <= reusablePages) { pdfObserver.observe(retained[i - 1]); continue; }
-    const slot = document.createElement('div');
-    slot.className = 'pdf-page-slot'; slot.dataset.page = String(i);
-    slot.style.width = `${Math.ceil(pdfPreviewSize[0] * 72 / 25.4 * pdfScale)}px`;
-    slot.style.height = `${Math.ceil(pdfPreviewSize[1] * 72 / 25.4 * pdfScale)}px`;
-    container.append(slot); pdfObserver.observe(slot);
+  const scrollTop = container.scrollTop;
+  const [width, height] = paperSize();
+  const slotWidth = `${Math.ceil(width * 72 / 25.4 * pdfScale)}px`;
+  const slotHeight = `${Math.ceil(height * 72 / 25.4 * pdfScale)}px`;
+  const slots = [...container.querySelectorAll<HTMLElement>('.pdf-page-slot')];
+  for (let i = slots.length - 1; i >= total; i--) {
+    pdfObserver.unobserve(slots[i]);
+    slots[i].remove();
   }
-  const first = container.querySelector<HTMLElement>('.pdf-page-slot');
-  if (first && !first.querySelector('canvas')) await renderPdfSlot(first, token);
-  const newest = container.querySelector<HTMLElement>(`.pdf-page-slot[data-page="${pdfPreviewImages.length}"]`);
-  if (newest && newest !== first && newest.getBoundingClientRect().top < container.getBoundingClientRect().bottom + 700)
-    await renderPdfSlot(newest, token);
+  for (let i = 0; i < total; i++) {
+    let slot = slots[i];
+    if (!slot) {
+      slot = document.createElement('div');
+      slot.className = 'pdf-page-slot'; slot.dataset.page = String(i + 1);
+      container.append(slot);
+      pdfObserver.observe(slot);
+    }
+    slot.style.width = slotWidth;
+    slot.style.height = slotHeight;
+    const canvas = slot.querySelector<HTMLCanvasElement>('canvas');
+    if (canvas) { canvas.style.width = slotWidth; canvas.style.height = slotHeight; }
+    if (pdfPreviewImages[i]) {
+      if (!canvas) {
+        setPdfSlotState(slot, 'ready');
+        if (pdfSlotNearViewport(slot, container)) void renderPdfSlot(slot);
+      }
+    } else setPdfSlotState(slot, 'waiting');
+  }
+  if (container.scrollTop !== scrollTop) container.scrollTop = scrollTop;
+  pdfPage = Math.max(1, Math.min(pdfPage, total));
   updatePageInfo();
-  syncPdfCursor();
 }
-async function renderPdfSlot(slot: HTMLElement, token: number) {
-  if (slot.dataset.rendering || slot.querySelector('canvas') || token !== pdfRenderToken) return;
-  slot.dataset.rendering = 'true';
+function renderPdfSlot(slot: HTMLElement): Promise<void> {
+  const running = pdfSlotRenders.get(slot);
+  if (running) return running;
+  const task = renderPdfSlotImage(slot).then(async () => {
+    pdfSlotRenders.delete(slot);
+    const index = Number(slot.dataset.page) - 1;
+    const container = document.getElementById('pdfPages');
+    if (slot.isConnected && container && pdfPreviewImages[index] && slot.dataset.state !== 'error' &&
+      !slot.querySelector('canvas') && pdfSlotNearViewport(slot, container)) await renderPdfSlot(slot);
+  });
+  pdfSlotRenders.set(slot, task);
+  return task;
+}
+async function renderPdfSlotImage(slot: HTMLElement) {
+  const index = Number(slot.dataset.page) - 1;
+  const sourceImage = pdfPreviewImages[index];
+  if (!sourceImage || slot.dataset.state === 'error' || slot.querySelector('canvas')) return;
   try {
     const image = new Image();
-    image.src = pdfPreviewImages[Number(slot.dataset.page) - 1];
+    image.src = sourceImage;
     await image.decode();
-    if (token !== pdfRenderToken) return;
+    if (!slot.isConnected || pdfPreviewImages[index] !== sourceImage) return;
     const canvas = document.createElement('canvas');
     canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
     canvas.style.width = slot.style.width; canvas.style.height = slot.style.height;
     canvas.getContext('2d')!.drawImage(image, 0, 0);
     slot.append(canvas);
+    slot.querySelector('.pdf-page-placeholder')?.remove();
+    slot.dataset.state = 'ready';
   } catch (error) {
-    if (token === pdfRenderToken) slot.textContent = `页面渲染失败：${error instanceof Error ? error.message : error}`;
-  } finally {
-    delete slot.dataset.rendering;
-    if (token !== pdfRenderToken && slot.isConnected && !slot.querySelector('canvas'))
-      void renderPdfSlot(slot, pdfRenderToken);
+    if (slot.isConnected && pdfPreviewImages[index] === sourceImage) {
+      slot.dataset.state = 'error';
+      slot.querySelector('.pdf-page-placeholder')?.remove();
+      const message = document.createElement('div');
+      message.className = 'pdf-page-error';
+      message.textContent = `页面渲染失败：${error instanceof Error ? error.message : error}`;
+      slot.append(message);
+    }
   }
 }
 function updatePageInfo() {
   const info = document.getElementById('pageInfo');
-  if (info) info.textContent = `${pdfPreviewImages.length ? pdfPage : 0} / ${pdfPreviewImages.length}`;
+  const total = document.querySelectorAll('#pdfPages .pdf-page-slot').length;
+  if (info) info.textContent = `${total ? pdfPage : 0} / ${total}`;
   const label = document.getElementById('zoomLabel');
   if (label) label.textContent = `${Math.round(pdfScale * 100)}%`;
 }
 function jumpPage(page: number) {
-  if (!pdfPreviewImages.length) return;
-  pdfPage = Math.max(1, Math.min(pdfPreviewImages.length, page));
+  const total = document.querySelectorAll('#pdfPages .pdf-page-slot').length;
+  if (!total) return;
+  pdfPage = Math.max(1, Math.min(total, page));
   document.querySelector(`#pdfPages .pdf-page-slot[data-page="${pdfPage}"]`)?.scrollIntoView({ block: 'start' });
   updatePageInfo();
 }
 function setScale(value: number) {
   pdfScale = Math.max(0.3, Math.min(3, value));
-  void renderPdfPages();
+  syncPdfPageSlots(document.querySelectorAll('#pdfPages .pdf-page-slot').length);
 }
 async function exportPdf() {
   if (!pdfBytes || pdfBusy || pdfDirty) {
@@ -2682,7 +2622,6 @@ window.addEventListener('message', (event: MessageEvent) => {
     if (Number.isInteger(message.line) && Number.isInteger(message.character)) {
       cursorPosition = { line: message.line, character: message.character };
       if (mode === 'preview' && settings.syncScroll) scrollPreviewCursor();
-      else if (mode === 'pdf') syncPdfCursor();
     }
   } else if (message.type === 'exportNow') {
     void exportPdf();

@@ -75,8 +75,9 @@ test('PDF layout persists by file across previews without mixing files', async (
     await one.deliver({ type: 'ready' });
     assert.deepEqual(one.messages.at(-1).exportSettings, {}, 'old global layout must be ignored');
     assert.deepEqual(one.messages.at(-1).cursor, { line: 4, character: 2 });
+    const messageCount = one.messages.length;
     selectionListener({ textEditor: { document: first }, selections: [{ active: { line: 3, character: 7 } }] });
-    assert.deepEqual(one.messages.at(-1), { type: 'cursorPosition', line: 3, character: 7 });
+    assert.equal(one.messages.length, messageCount, 'PDF preview should not follow editor selection changes');
 
     await one.deliver({ type: 'saveSettings', value: { paper: 'a5', marginTop: 37, template: 'academic',
       templateRanges: [{ start: 0, end: 1, id: 'technical' }] } });
