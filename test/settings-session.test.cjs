@@ -10,7 +10,7 @@ test('PDF layout persists by file across previews without mixing files', async (
   const documents = [first, second];
   const commands = new Map();
   const panels = [];
-  let selectionListener;
+  let visibleRangeListener;
   const stored = new Map([
     ['exportSettings', { paper: 'letter', fontSize: 30 }],
     ['templateSelections', { [first.uri.toString()]: { templateRanges: [{ start: 0, end: 2, id: 'academic' }] } }]
@@ -49,8 +49,8 @@ test('PDF layout persists by file across previews without mixing files', async (
         panels.push(panel);
         return panel;
       },
-      onDidChangeTextEditorVisibleRanges: disposable,
-      onDidChangeTextEditorSelection: callback => { selectionListener = callback; return disposable(); },
+      onDidChangeTextEditorVisibleRanges: callback => { visibleRangeListener = callback; return disposable(); },
+      onDidChangeTextEditorSelection: disposable,
       onDidChangeVisibleTextEditors: disposable,
       onDidChangeActiveTextEditor: disposable
     },
@@ -75,10 +75,6 @@ test('PDF layout persists by file across previews without mixing files', async (
     await one.deliver({ type: 'ready' });
     assert.deepEqual(one.messages.at(-1).exportSettings, {}, 'old global layout must be ignored');
     assert.deepEqual(one.messages.at(-1).cursor, { line: 4, character: 2 });
-    const messageCount = one.messages.length;
-    selectionListener({ textEditor: { document: first }, selections: [{ active: { line: 3, character: 7 } }] });
-    assert.equal(one.messages.length, messageCount, 'PDF preview should not follow editor selection changes');
-
     await one.deliver({ type: 'saveSettings', value: { paper: 'a5', marginTop: 37, template: 'academic',
       templateRanges: [{ start: 0, end: 1, id: 'technical' }] } });
     await one.deliver({ type: 'visual' });
@@ -110,6 +106,18 @@ test('PDF layout persists by file across previews without mixing files', async (
     assert.ok(writes.includes(`pdfLayout:${first.uri.toString()}`));
     assert.ok(writes.includes(`pdfLayout:${second.uri.toString()}`));
     assert.equal(writes.includes('exportSettings') || writes.includes('templateSelections'), false);
+
+    reopenedSecond.active = false;
+    vscode.window.activeTextEditor = { document: second };
+    await commands.get('markdownCompiler.split')();
+    const editor = { document: second, selection: { active: { line: 0, character: 0 } },
+      visibleRanges: [{ start: { line: 3 } }], setDecorations() {}, revealRange() { throw new Error('preview moved editor'); } };
+    vscode.window.visibleTextEditors = [editor];
+    await reopenedSecond.deliver({ type: 'ready' });
+    assert.equal(reopenedSecond.messages.at(-1).visibleLine, 3);
+    visibleRangeListener({ textEditor: editor, visibleRanges: [{ start: { line: 4 } }] });
+    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 4 });
+    await reopenedSecond.deliver({ type: 'scrollTo', line: 0 });
   } finally {
     Module._load = originalLoad;
   }

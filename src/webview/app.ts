@@ -237,13 +237,10 @@ const pendingImageRequests = new Map<string, { resolve: (data: string) => void; 
 const imageDataCache = new Map<string, Promise<string>>();
 let autoExport = false;
 let autoUpdate = true;
-let showBreaks = true;
+let showBreaks = false;
 let pageBoundaries: Array<{ line: number; page: number; type: string }> = [];
-let lastScrollLine = 0;
 let cursorPosition: { line: number; character: number } | null = null;
 let preserveTaskPreviewPosition = false;
-let suppressScrollUntil = 0;
-let lastSentScrollLine = -1;
 let marginDraft: any = null;
 let coverDraft: Record<string, [number, number]> | null = null;
 let fonts: any[] = [];
@@ -519,6 +516,7 @@ function pdfControls() {
     </div><div id="pdfStatus" class="pdf-status"></div><div id="pdfPages" class="pdf-pages"></div>`;
 }
 function buildShell() {
+  root.classList.toggle('hide-breaks', !showBreaks);
   root.innerHTML = `${toolbar()}<div id="workspace" class="${mode}">
     <div id="documentPane"><div class="document-scroll"><div id="documentBody"></div></div></div>
     <div id="pdfPane">${pdfControls()}</div></div>
@@ -539,7 +537,6 @@ function buildShell() {
     event.preventDefault();
     setScale(pdfScale * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
   }, { passive: false });
-  root.querySelector('.document-scroll')?.addEventListener('scroll', onDocumentScroll, { passive: true });
   const documentPane = root.querySelector<HTMLElement>('.document-scroll');
   if (documentPane) new ResizeObserver(() => documentPane.style.setProperty('--preview-height', `${documentPane.clientHeight}px`)).observe(documentPane);
   const pdfPages = document.getElementById('pdfPages');
@@ -552,7 +549,7 @@ function buildShell() {
     }
   }, { passive: true });
 }
-function renderDocument(preserve = true) {
+function renderDocument(preserve = true, followCursor = false) {
   const pane = document.querySelector<HTMLElement>('.document-scroll');
   const previous = preserve ? pane?.scrollTop || 0 : 0;
   const body = document.getElementById('documentBody')!;
@@ -587,15 +584,12 @@ function renderDocument(preserve = true) {
   document.documentElement.style.setProperty('--editor-paragraph-gap', `${settings.paragraphGap ?? 10}px`);
   document.documentElement.style.setProperty('--editor-width', `${settings.maxWidth || 860}px`);
   const renderedSource = source;
-  const resync = () => { if (source === renderedSource && mode === 'preview' && settings.syncScroll) scrollPreviewCursor(); };
+  const resync = () => { if (followCursor && source === renderedSource && mode === 'preview' && settings.syncScroll) scrollPreviewCursor(); };
   void localizeImages(body).then(resync);
   void renderMermaid(body).then(resync);
   void document.fonts.ready.then(resync);
   if (pane) pane.scrollTop = previous;
-  if (mode === 'preview' && settings.syncScroll && !preserveTaskPreviewPosition) {
-    if (cursorPosition) scrollPreviewCursor();
-    else if (lastScrollLine) scrollToLine(lastScrollLine);
-  }
+  if (followCursor && mode === 'preview' && settings.syncScroll) scrollPreviewCursor();
   if (mode === 'pdf') document.getElementById('documentPane')!.style.display = 'none';
 }
 function scrollToLine(line: number) {
@@ -605,11 +599,13 @@ function scrollToLine(line: number) {
   const node = nodes.findLast(n => Number(n.dataset.line) <= line) || nodes[0];
   if (!node) return;
   const paneRect = pane.getBoundingClientRect(), nodeRect = node.getBoundingClientRect();
-  if (nodeRect.top >= paneRect.top + 2 && nodeRect.bottom <= paneRect.bottom - 2) return;
-  const offset = nodeRect.top - paneRect.top + pane.scrollTop;
-  const target = Math.max(0, Math.min(offset, pane.scrollHeight - pane.clientHeight));
+  const block = blocks[Number(node.dataset.index)];
+  const firstLine = Number(node.dataset.line);
+  const lineCount = Math.max(1, block?.raw.split('\n').length || 1);
+  const fraction = Math.max(0, Math.min(1, (line - firstLine) / lineCount));
+  const offset = nodeRect.top - paneRect.top + pane.scrollTop + nodeRect.height * fraction;
+  const target = Math.max(0, Math.min(offset - 24, pane.scrollHeight - pane.clientHeight));
   if (Math.abs(pane.scrollTop - target) < 2) return;
-  suppressScrollUntil = Date.now() + 350;
   pane.scrollTop = target;
 }
 function cursorBlock() {
@@ -711,16 +707,6 @@ function scrollPreviewCursor() {
   if (target.top >= paneRect.top + 24 && target.bottom <= paneRect.bottom - 24) return;
   const top = pane.scrollTop + target.top - paneRect.top - pane.clientHeight * .4;
   pane.scrollTop = Math.max(0, Math.min(top, pane.scrollHeight - pane.clientHeight));
-}
-function onDocumentScroll() {
-  if (mode !== 'preview' || !settings.syncScroll || Date.now() < suppressScrollUntil) return;
-  const pane = document.querySelector<HTMLElement>('.document-scroll')!;
-  const top = pane.getBoundingClientRect().top + 50;
-  const nodes = [...document.querySelectorAll<HTMLElement>('#documentBody .md-block')];
-  const atBottom = pane.scrollTop >= pane.scrollHeight - pane.clientHeight - 2;
-  const node = atBottom ? nodes.at(-1) : nodes.findLast(n => n.getBoundingClientRect().top <= top);
-  const line = node ? Number(node.dataset.line) : -1;
-  if (line >= 0 && line !== lastSentScrollLine) { lastSentScrollLine = line; post('scrollTo', { line }); }
 }
 function selectedBlockElement(): HTMLElement | null {
   const selection = window.getSelection();
@@ -1185,10 +1171,10 @@ function rebaseTemplateRanges(previous: string, next: string) {
     post('saveSettings', { value: exportSettings });
   }
 }
-function applySource(newSource: string, newVersion: number, own = false) {
+function applySource(newSource: string, newVersion: number, own = false, followCursor = false) {
   if (newVersion < version) return;
   if (!own && pendingEdit && document.activeElement?.closest?.('.md-block')) {
-    window.setTimeout(() => applySource(newSource, newVersion), 300);
+    window.setTimeout(() => applySource(newSource, newVersion, false, followCursor), 300);
     return;
   }
   if (newSource === source) {
@@ -1227,7 +1213,7 @@ function applySource(newSource: string, newVersion: number, own = false) {
     return;
   }
   pendingEdit = null;
-  renderDocument();
+  renderDocument(true, followCursor);
   if (mode === 'pdf' || mode === 'preview') schedulePdf();
 }
 function captureBlockCaret(block: HTMLElement) {
@@ -2746,6 +2732,7 @@ window.addEventListener('message', (event: MessageEvent) => {
     autoExport = !!message.autoExport;
     cursorPosition = message.cursor && Number.isInteger(message.cursor.line) && Number.isInteger(message.cursor.character) ? message.cursor : null;
     source = message.source; version = message.version; pdfDirty = true; renderDocument(false);
+    if (mode === 'preview' && settings.syncScroll && Number.isInteger(message.visibleLine)) scrollToLine(message.visibleLine);
     if (mode === 'pdf' || autoExport) schedulePdf(true);
     else if (mode === 'preview') schedulePdf();
   } else if (message.type === 'documentChanged') {
@@ -2754,7 +2741,10 @@ window.addEventListener('message', (event: MessageEvent) => {
     const sameOwnEdit = pendingEdit && message.source.replace(/\r\n?/g, '\n') === pendingEdit.nextSource.replace(/\r\n?/g, '\n');
     if (sameOwnEdit) {
       applySource(message.source, message.version, true);
-    } else applySource(message.source, message.version);
+    } else {
+      if (message.followCursor) preserveTaskPreviewPosition = false;
+      applySource(message.source, message.version, false, !!message.followCursor);
+    }
   } else if (message.type === 'editAck') {
     const before = ownEdits.get(message.id);
     ownEdits.delete(message.id);
@@ -2806,13 +2796,14 @@ window.addEventListener('message', (event: MessageEvent) => {
   } else if (message.type === 'fonts') {
     setFonts(message.fonts || [], message.importedId);
   } else if (message.type === 'scrollToLine') {
-    if (mode === 'preview') { lastScrollLine = message.line; scrollToLine(message.line); }
+    if (mode === 'preview' && settings.syncScroll && Number.isInteger(message.line)) scrollToLine(message.line);
   } else if (message.type === 'cursorPosition') {
     if (Number.isInteger(message.line) && Number.isInteger(message.character)) {
-      if (cursorPosition && (message.line !== cursorPosition.line || message.character !== cursorPosition.character))
-        preserveTaskPreviewPosition = false;
       cursorPosition = { line: message.line, character: message.character };
-      if (mode === 'preview' && settings.syncScroll) scrollPreviewCursor();
+      if (message.typing && mode === 'preview' && settings.syncScroll) {
+        preserveTaskPreviewPosition = false;
+        scrollPreviewCursor();
+      }
     }
   } else if (message.type === 'exportNow') {
     void exportPdf();

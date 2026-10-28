@@ -9,7 +9,6 @@ const panels = new Set<Panel>();
 const templateDrafts = new Map<Panel, Record<string, { file: string; name: string }>>();
 const templateSlotPattern = /^(a4|a5|letter)-(portrait|landscape)-(body|cover)$/;
 const boundariesByUri = new Map<string, Array<{ line: number; page: number; type: string }>>();
-const editorScrollEchoUntil = new Map<string, number>();
 let boundaryDecoration: vscode.TextEditorDecorationType;
 let lastDocument: vscode.Uri | undefined;
 let extensionContext: vscode.ExtensionContext;
@@ -115,6 +114,10 @@ function cursorFor(uri: vscode.Uri) {
   const position = editor?.selection?.active;
   return position ? { line: position.line, character: position.character } : undefined;
 }
+function visibleLineFor(uri: vscode.Uri) {
+  const editor = vscode.window.visibleTextEditors.find(item => item.document.uri.toString() === uri.toString());
+  return editor?.visibleRanges?.[0]?.start.line;
+}
 function pdfLayoutKey(uri: vscode.Uri) { return `pdfLayout:${uri.toString()}`; }
 function templatesFor(state: Panel) {
   return extensionContext.globalState.get<any[]>('templates', []).map(template => ({
@@ -167,7 +170,7 @@ async function handleMessage(state: Panel, message: any) {
       post(state, { type: 'document', source: document.getText(), version: document.version, settings: settings(document.uri),
         exportSettings: state.exportSettings || extensionContext.globalState.get<Record<string, any>>(pdfLayoutKey(state.uri), {}),
         templates: templatesFor(state), fonts: fontsFor(state),
-        autoExport: state.autoExport, cursor: cursorFor(state.uri) });
+        autoExport: state.autoExport, cursor: cursorFor(state.uri), visibleLine: visibleLineFor(state.uri) });
       state.autoExport = false;
     } else if (message.type === 'resolveImage') {
       const id = String(message.id || '');
@@ -309,12 +312,6 @@ async function handleMessage(state: Panel, message: any) {
         const target = vscode.Uri.joinPath(document.uri, '..', decodeURIComponent(href.split('#')[0]));
         await vscode.commands.executeCommand('vscode.open', target);
       }
-    } else if (message.type === 'scrollTo') {
-      const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === state.uri.toString());
-      if (editor && Number.isInteger(message.line) && message.line >= 0 && message.line < document.lineCount) {
-        editorScrollEchoUntil.set(state.uri.toString(), Date.now() + 500);
-        editor.revealRange(new vscode.Range(message.line, 0, message.line, 0), vscode.TextEditorRevealType.AtTop);
-      }
     } else if (message.type === 'pageBoundaries') {
       boundariesByUri.set(state.uri.toString(), Array.isArray(message.boundaries) ? message.boundaries : []);
       refreshBoundaryDecorations();
@@ -383,23 +380,18 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
     vscode.workspace.onDidChangeTextDocument(event => {
+      const active = vscode.window.activeTextEditor;
+      const typing = active?.document.uri.toString() === event.document.uri.toString() && !!event.contentChanges.length;
       for (const state of panels) if (state.uri.toString() === event.document.uri.toString())
         post(state, { type: 'documentChanged', source: event.document.getText(), version: event.document.version,
-          cursor: cursorFor(state.uri) });
-    }),
-    vscode.window.onDidChangeTextEditorSelection(event => {
-      for (const state of panels) if (state.uri.toString() === event.textEditor.document.uri.toString() &&
-        state.mode === 'preview' && settings(state.uri).syncScroll)
-        post(state, { type: 'cursorPosition', line: event.selections[0].active.line,
-          character: event.selections[0].active.character });
+          cursor: cursorFor(state.uri), followCursor: typing });
     }),
     vscode.window.onDidChangeTextEditorVisibleRanges(event => {
       if (!settings(event.textEditor.document.uri).syncScroll) return;
-      if (Date.now() < (editorScrollEchoUntil.get(event.textEditor.document.uri.toString()) || 0)) return;
+      const line = event.visibleRanges[0]?.start.line;
+      if (!Number.isInteger(line)) return;
       for (const state of panels) if (state.mode === 'preview' && state.uri.toString() === event.textEditor.document.uri.toString())
-        if (event.textEditor.selection?.active && event.visibleRanges.some(range => range.contains(event.textEditor.selection.active)))
-          post(state, { type: 'cursorPosition', line: event.textEditor.selection.active.line,
-            character: event.textEditor.selection.active.character });
+        post(state, { type: 'scrollToLine', line });
     }),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('markdownCompiler') || event.affectsConfiguration('editor.fontFamily'))
@@ -407,12 +399,7 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.window.onDidChangeVisibleTextEditors(() => refreshBoundaryDecorations()),
     vscode.window.onDidChangeActiveTextEditor(editor => {
-      if (editor?.document.languageId === 'markdown') {
-        lastDocument = editor.document.uri;
-        for (const state of panels) if (state.uri.toString() === editor.document.uri.toString() && editor.selection?.active)
-          post(state, { type: 'cursorPosition', line: editor.selection.active.line,
-            character: editor.selection.active.character });
-      }
+      if (editor?.document.languageId === 'markdown') lastDocument = editor.document.uri;
     })
   );
 }

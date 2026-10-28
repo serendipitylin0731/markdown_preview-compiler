@@ -374,6 +374,7 @@ test('manual page break is present in generated export bytes', async () => {
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
   const info = await page.locator('#pageInfo').textContent();
   assert.match(info, /\/\s*[2-9]/);
+  await page.locator('button[data-action=breakMarkers]').click();
   const boundaries = await page.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'pageBoundaries')?.boundaries || []);
   assert.ok(boundaries.some(item => item.type === 'manual'));
   if (process.env.MDC_SCREENSHOT) await page.locator('#pdfPages canvas').first().screenshot({ path: process.env.MDC_SCREENSHOT });
@@ -953,7 +954,7 @@ test('source cursor stays visible in split preview across headings, code, formul
   for (const [marker, selector] of [['起始标题', 'h1'], ['code-line-012', 'pre code'], ['E = mc^2', '.math-block'],
     ['详细说明', 'details summary']]) {
     const line = lines.findIndex(value => value.includes(marker));
-    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3) });
+    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3), typing: true });
     const visible = await page.evaluate(selector => {
       const pane = document.querySelector('.document-scroll').getBoundingClientRect();
       const target = document.querySelector(`#documentBody ${selector}`).getBoundingClientRect();
@@ -1003,6 +1004,7 @@ test('split preview follows a long code line and text around many images after t
   const data = `data:image/png;base64,${fs.readFileSync(path.resolve(__dirname, '..', 'assets/logo.png')).toString('base64')}`;
   for (const request of requests) await deliver(page, { type: 'imageResolved', id: request.id, data });
   await page.waitForFunction(() => document.querySelector('#documentBody img[alt="图片9"]')?.complete);
+  await deliver(page, { type: 'cursorPosition', line: lastImage, character: 4, typing: true });
   await page.waitForFunction(() => {
     const pane = document.querySelector('.document-scroll').getBoundingClientRect();
     const image = document.querySelector('#documentBody img[alt="图片9"]')?.getBoundingClientRect();
@@ -1014,7 +1016,7 @@ test('split preview follows a long code line and text around many images after t
   ];
   for (const [marker, kind] of checks) {
     const line = lines.findIndex(value => value.includes(marker));
-    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3) });
+    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3), typing: true });
     const visible = await page.evaluate(({ marker, kind }) => {
       const pane = document.querySelector('.document-scroll').getBoundingClientRect();
       let rect;
@@ -1067,6 +1069,7 @@ test('a long paragraph continues across PDF pages', async () => {
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
   const fragments = await page.locator('#printHost .print-fragment').count();
   assert.ok(fragments > 1, `expected multiple fragments, got ${fragments}`);
+  await page.locator('button[data-action=breakMarkers]').click();
   const boundaries = await page.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'pageBoundaries')?.boundaries || []);
   assert.ok(boundaries.some(item => item.type === 'automatic'));
   const info = await page.locator('#pageInfo').textContent();
@@ -1082,6 +1085,7 @@ test('pagination stays live with PDF auto update off and preserves earlier pages
   const source = prefix + '后面的内容。'.repeat(220) + '\n';
   await deliver(page, { type: 'document', source, version: 1,
     settings: { autoUpdate: false, editorFontFamily: 'Arial, sans-serif' }, exportSettings: { paper: 'a5' }, templates: [] });
+  await page.locator('button[data-action=breakMarkers]').click();
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
   await page.evaluate(() => {
     window.__FIRST_PRINT_PAGE__ = document.querySelector('#printHost .print-page');
@@ -1638,7 +1642,7 @@ test('checking a task in split preview keeps the current scroll position until t
   await page.waitForTimeout(250);
   const after = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
   assert.ok(Math.abs(after - before) < 2, `task click moved preview from ${before} to ${after}`);
-  await deliver(page, { type: 'cursorPosition', line: 0, character: 1 });
+  await deliver(page, { type: 'cursorPosition', line: 0, character: 1, typing: true });
   const followed = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
   assert.ok(followed < before - 300, `a later source cursor move did not resume following: ${followed}`);
   await page.close();
@@ -1755,7 +1759,7 @@ test('template import requires a body image and limits paper choices to supplied
   await page.close();
 });
 
-test('preview bottom scroll is bounded and does not oscillate on source echo', async () => {
+test('scrolling the preview does not send commands that move the editor', async () => {
   const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
   await page.goto(base + '/?mode=preview');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
@@ -1768,14 +1772,38 @@ test('preview bottom scroll is bounded and does not oscillate on source echo', a
     const last = document.querySelector('#documentBody .md-block:last-child');
     return { top: pane.scrollTop, max: pane.scrollHeight - pane.clientHeight,
       bottomFraction: (last.getBoundingClientRect().bottom - pane.getBoundingClientRect().top) / pane.clientHeight,
-      line: window.__MDC_MESSAGES__.findLast(m => m.type === 'scrollTo')?.line };
+      sentScroll: window.__MDC_MESSAGES__.some(m => m.type === 'scrollTo') };
   });
   assert.ok(state.max > 0);
   assert.ok(state.bottomFraction > 0.56 && state.bottomFraction < 0.76, `last content at ${state.bottomFraction}`);
-  for (let index = 0; index < 5; index++) await deliver(page, { type: 'scrollToLine', line: state.line });
-  await page.waitForTimeout(450);
-  const finalTop = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
-  assert.ok(Math.abs(finalTop - state.top) < 2, `scroll shifted from ${state.top} to ${finalTop}`);
+  assert.equal(state.sentScroll, false);
+  await page.close();
+});
+
+test('split preview follows editor scrolling independently of the caret and follows the caret only while typing', async () => {
+  const page = await browser.newPage({ viewport: { width: 900, height: 500 } });
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = Array.from({ length: 60 }, (_, index) => `第 ${index + 1} 段正文。`).join('\n\n') + '\n';
+  const pane = page.locator('.document-scroll');
+  await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true },
+    exportSettings: {}, templates: [], cursor: { line: 0, character: 0 }, visibleLine: 90 });
+  const initial = await pane.evaluate(element => element.scrollTop);
+  assert.ok(initial > 400, `initial editor viewport was not followed: ${initial}`);
+  await deliver(page, { type: 'cursorPosition', line: 0, character: 1 });
+  assert.ok(Math.abs(await pane.evaluate(element => element.scrollTop) - initial) < 2);
+  await deliver(page, { type: 'scrollToLine', line: 6 });
+  const nearTop = await pane.evaluate(element => element.scrollTop);
+  assert.ok(nearTop < initial - 300, `editor wheel did not move preview: ${nearTop}`);
+  await deliver(page, { type: 'scrollToLine', line: 105 });
+  const nearBottom = await pane.evaluate(element => element.scrollTop);
+  assert.ok(nearBottom > nearTop + 300, `editor wheel did not move preview down: ${nearBottom}`);
+  await deliver(page, { type: 'documentChanged', source: source + '末尾更新\n', version: 2,
+    cursor: { line: 0, character: 1 }, followCursor: false });
+  assert.ok(Math.abs(await pane.evaluate(element => element.scrollTop) - nearBottom) < 2);
+  await deliver(page, { type: 'documentChanged', source: '编辑中' + source, version: 3,
+    cursor: { line: 0, character: 3 }, followCursor: true });
+  assert.ok(await pane.evaluate(element => element.scrollTop) < nearBottom - 300);
   await page.close();
 });
 
@@ -1824,7 +1852,6 @@ test('PDF controls show marker state without an editing pane', async () => {
   await page.goto(base + '/?mode=pdf');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   await deliver(page, { type: 'document', source: '# 内容\n', version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
-  await page.locator('button[data-action=breakMarkers]').click();
   assert.equal(await page.locator('button[data-action=breakMarkers]').textContent(), '显示分页标记');
   assert.equal(await page.locator('button[data-action=breakMarkers]').getAttribute('aria-pressed'), 'false');
   assert.equal(await page.locator('#documentPane').isVisible(), false);
@@ -1839,11 +1866,14 @@ test('split preview toggles manual and automatic page markers together', async (
   const paragraphs = start => Array.from({ length: 35 }, (_, i) => `第 ${start + i} 段。${'分页内容'.repeat(18)}`).join('\n\n');
   const source = `${paragraphs(1)}\n\n<!-- pagebreak -->\n\n${paragraphs(36)}\n`;
   await deliver(page, { type: 'document', source, version: 1, settings: { autoUpdate: false }, exportSettings: {}, templates: [] });
+  const button = page.locator('.toolbar button[data-action=breakMarkers]');
+  assert.equal(await button.getAttribute('aria-pressed'), 'false');
+  assert.equal(await page.locator('#documentBody .manual-break').isVisible(), false);
+  await button.click();
   await page.waitForFunction(() => document.querySelector('#documentBody .page-boundary.automatic') &&
     window.__MDC_MESSAGES__.some(m => m.type === 'pageBoundaries' &&
       m.boundaries.some(b => b.type === 'manual') && m.boundaries.some(b => b.type === 'automatic')),
   { timeout: 15000 });
-  const button = page.locator('.toolbar button[data-action=breakMarkers]');
   assert.equal(await button.count(), 1);
   assert.equal(await button.getAttribute('aria-pressed'), 'true');
   assert.equal(await page.locator('#documentBody .manual-break').count(), 1);
