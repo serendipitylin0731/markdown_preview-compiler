@@ -9,6 +9,7 @@ const panels = new Set<Panel>();
 const templateDrafts = new Map<Panel, Record<string, { file: string; name: string }>>();
 const templateSlotPattern = /^(a4|a5|letter)-(portrait|landscape)-(body|cover)$/;
 const boundariesByUri = new Map<string, Array<{ line: number; page: number; type: string }>>();
+const editorViewportByUri = new Map<string, string>();
 let boundaryDecoration: vscode.TextEditorDecorationType;
 let lastDocument: vscode.Uri | undefined;
 let extensionContext: vscode.ExtensionContext;
@@ -101,6 +102,7 @@ async function openPanel(document: vscode.TextDocument, mode: Mode, column: vsco
     void discardTemplateDraft(state);
     if (![...panels].some(other => other.uri.toString() === state.uri.toString())) {
       boundariesByUri.delete(state.uri.toString());
+      editorViewportByUri.delete(state.uri.toString());
       refreshBoundaryDecorations();
     }
   });
@@ -114,9 +116,21 @@ function cursorFor(uri: vscode.Uri) {
   const position = editor?.selection?.active;
   return position ? { line: position.line, character: position.character } : undefined;
 }
-function visibleLineFor(uri: vscode.Uri) {
+function visiblePositionFor(uri: vscode.Uri) {
   const editor = vscode.window.visibleTextEditors.find(item => item.document.uri.toString() === uri.toString());
-  return editor?.visibleRanges?.[0]?.start.line;
+  const start = editor?.visibleRanges?.[0]?.start;
+  return start ? { line: start.line, character: start.character } : undefined;
+}
+function syncEditorViewport(editor: vscode.TextEditor, ranges: readonly vscode.Range[], onlyIfChanged = false) {
+  if (!settings(editor.document.uri).syncScroll) return;
+  const start = ranges[0]?.start;
+  if (!start || !Number.isInteger(start.line)) return;
+  const key = editor.document.uri.toString();
+  const position = `${start.line}:${start.character}`;
+  if (onlyIfChanged && editorViewportByUri.get(key) === position) return;
+  editorViewportByUri.set(key, position);
+  for (const state of panels) if (state.mode === 'preview' && state.uri.toString() === key)
+    post(state, { type: 'scrollToLine', line: start.line, character: start.character });
 }
 function pdfLayoutKey(uri: vscode.Uri) { return `pdfLayout:${uri.toString()}`; }
 function templatesFor(state: Panel) {
@@ -170,7 +184,7 @@ async function handleMessage(state: Panel, message: any) {
       post(state, { type: 'document', source: document.getText(), version: document.version, settings: settings(document.uri),
         exportSettings: state.exportSettings || extensionContext.globalState.get<Record<string, any>>(pdfLayoutKey(state.uri), {}),
         templates: templatesFor(state), fonts: fontsFor(state),
-        autoExport: state.autoExport, cursor: cursorFor(state.uri), visibleLine: visibleLineFor(state.uri) });
+        autoExport: state.autoExport, cursor: cursorFor(state.uri), visiblePosition: visiblePositionFor(state.uri) });
       state.autoExport = false;
     } else if (message.type === 'resolveImage') {
       const id = String(message.id || '');
@@ -339,8 +353,17 @@ async function showPdf(document: vscode.TextDocument) {
 export function activate(context: vscode.ExtensionContext) {
   extensionContext = context;
   boundaryDecoration = vscode.window.createTextEditorDecorationType({});
+  // Visible-range notifications may be missed while focus changes between the editor
+  // and its webview. Check the small viewport state as a fallback while split preview is open.
+  const viewportTimer = setInterval(() => {
+    if (![...panels].some(state => state.mode === 'preview' && state.panel.visible)) return;
+    for (const editor of vscode.window.visibleTextEditors)
+      syncEditorViewport(editor, editor.visibleRanges, true);
+  }, 150);
+  viewportTimer.unref();
   context.subscriptions.push(
     boundaryDecoration,
+    { dispose: () => clearInterval(viewportTimer) },
     vscode.commands.registerCommand('markdownCompiler.openPreferred', async () => {
       const document = await currentDocument();
       if (!document) return;
@@ -387,11 +410,10 @@ export function activate(context: vscode.ExtensionContext) {
           cursor: cursorFor(state.uri), followCursor: typing });
     }),
     vscode.window.onDidChangeTextEditorVisibleRanges(event => {
-      if (!settings(event.textEditor.document.uri).syncScroll) return;
-      const line = event.visibleRanges[0]?.start.line;
-      if (!Number.isInteger(line)) return;
-      for (const state of panels) if (state.mode === 'preview' && state.uri.toString() === event.textEditor.document.uri.toString())
-        post(state, { type: 'scrollToLine', line });
+      syncEditorViewport(event.textEditor, event.visibleRanges);
+    }),
+    vscode.window.onDidChangeTextEditorSelection(event => {
+      syncEditorViewport(event.textEditor, event.textEditor.visibleRanges, true);
     }),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('markdownCompiler') || event.affectsConfiguration('editor.fontFamily'))

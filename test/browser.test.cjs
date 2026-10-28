@@ -1787,7 +1787,7 @@ test('split preview follows editor scrolling independently of the caret and foll
   const source = Array.from({ length: 60 }, (_, index) => `第 ${index + 1} 段正文。`).join('\n\n') + '\n';
   const pane = page.locator('.document-scroll');
   await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true },
-    exportSettings: {}, templates: [], cursor: { line: 0, character: 0 }, visibleLine: 90 });
+    exportSettings: {}, templates: [], cursor: { line: 0, character: 0 }, visiblePosition: { line: 90, character: 0 } });
   const initial = await pane.evaluate(element => element.scrollTop);
   assert.ok(initial > 400, `initial editor viewport was not followed: ${initial}`);
   await deliver(page, { type: 'cursorPosition', line: 0, character: 1 });
@@ -1804,6 +1804,42 @@ test('split preview follows editor scrolling independently of the caret and foll
   await deliver(page, { type: 'documentChanged', source: '编辑中' + source, version: 3,
     cursor: { line: 0, character: 3 }, followCursor: true });
   assert.ok(await pane.evaluate(element => element.scrollTop) < nearBottom - 300);
+  await page.close();
+});
+
+test('editor viewport follows text inside one wrapped source block without moving the editor', async () => {
+  const page = await browser.newPage({ viewport: { width: 720, height: 430 } });
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const text = Array.from({ length: 180 }, (_, index) => `word${index}`).join(' ');
+  await deliver(page, { type: 'document', source: `# 标题\n\n${text}\n\n结尾。\n`, version: 1,
+    settings: { syncScroll: true, maxWidth: 400 }, exportSettings: {}, templates: [],
+    cursor: { line: 0, character: 0 } });
+  const pane = page.locator('.document-scroll');
+  await deliver(page, { type: 'scrollToLine', line: 2, character: 10 });
+  const nearStart = await pane.evaluate(element => element.scrollTop);
+  await deliver(page, { type: 'scrollToLine', line: 2, character: text.length - 20 });
+  const nearEnd = await pane.evaluate(element => element.scrollTop);
+  assert.ok(nearEnd > nearStart + 200, `scroll within a wrapped source line did not follow: ${nearStart} -> ${nearEnd}`);
+  await page.close();
+});
+
+test('editor scrolling moves through the demo document even when its HTML details are collapsed', async () => {
+  const page = await browser.newPage({ viewport: { width: 780, height: 480 } });
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'examples/demo.md'), 'utf8');
+  await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true },
+    exportSettings: {}, templates: [], visiblePosition: { line: 5, character: 0 } });
+  const pane = page.locator('.document-scroll');
+  const positions = [];
+  for (const line of [5, 39, 68, 84, 99, 110]) {
+    await deliver(page, { type: 'scrollToLine', line, character: 0 });
+    positions.push(await pane.evaluate(element => element.scrollTop));
+  }
+  assert.ok(positions[1] > positions[0] + 150, `preview did not follow the first editor scroll: ${positions}`);
+  assert.ok(positions[2] > positions[1] + 150, `preview did not follow the second editor scroll: ${positions}`);
+  assert.ok(positions[5] > positions[2] + 150, `preview stopped following around HTML details: ${positions}`);
   await page.close();
 });
 

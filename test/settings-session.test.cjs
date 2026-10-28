@@ -10,7 +10,7 @@ test('PDF layout persists by file across previews without mixing files', async (
   const documents = [first, second];
   const commands = new Map();
   const panels = [];
-  let visibleRangeListener;
+  let visibleRangeListener, selectionListener;
   const stored = new Map([
     ['exportSettings', { paper: 'letter', fontSize: 30 }],
     ['templateSelections', { [first.uri.toString()]: { templateRanges: [{ start: 0, end: 2, id: 'academic' }] } }]
@@ -35,7 +35,7 @@ test('PDF layout persists by file across previews without mixing files', async (
         const messages = [];
         let receive, dispose;
         const panel = {
-          title, viewColumn: column, active: true,
+          title, viewColumn: column, active: true, visible: true,
           webview: {
             asWebviewUri: value => value,
             postMessage: message => { messages.push(message); return Promise.resolve(true); },
@@ -50,7 +50,7 @@ test('PDF layout persists by file across previews without mixing files', async (
         return panel;
       },
       onDidChangeTextEditorVisibleRanges: callback => { visibleRangeListener = callback; return disposable(); },
-      onDidChangeTextEditorSelection: disposable,
+      onDidChangeTextEditorSelection: callback => { selectionListener = callback; return disposable(); },
       onDidChangeVisibleTextEditors: disposable,
       onDidChangeActiveTextEditor: disposable
     },
@@ -111,12 +111,23 @@ test('PDF layout persists by file across previews without mixing files', async (
     vscode.window.activeTextEditor = { document: second };
     await commands.get('markdownCompiler.split')();
     const editor = { document: second, selection: { active: { line: 0, character: 0 } },
-      visibleRanges: [{ start: { line: 3 } }], setDecorations() {}, revealRange() { throw new Error('preview moved editor'); } };
+      visibleRanges: [{ start: { line: 3, character: 0 } }], setDecorations() {}, revealRange() { throw new Error('preview moved editor'); } };
     vscode.window.visibleTextEditors = [editor];
     await reopenedSecond.deliver({ type: 'ready' });
-    assert.equal(reopenedSecond.messages.at(-1).visibleLine, 3);
-    visibleRangeListener({ textEditor: editor, visibleRanges: [{ start: { line: 4 } }] });
-    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 4 });
+    assert.deepEqual(reopenedSecond.messages.at(-1).visiblePosition, { line: 3, character: 0 });
+    visibleRangeListener({ textEditor: editor, visibleRanges: [{ start: { line: 4, character: 5 } }] });
+    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 4, character: 5 });
+    const sent = reopenedSecond.messages.length;
+    editor.visibleRanges = [{ start: { line: 4, character: 5 } }];
+    selectionListener({ textEditor: editor, selections: [{ active: { line: 6, character: 0 } }] });
+    assert.equal(reopenedSecond.messages.length, sent, 'moving the caret without scrolling should not move the preview');
+    editor.visibleRanges = [{ start: { line: 8, character: 0 } }];
+    selectionListener({ textEditor: editor, selections: [{ active: { line: 8, character: 0 } }] });
+    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 8, character: 0 });
+    editor.visibleRanges = [{ start: { line: 10, character: 0 } }];
+    await new Promise(resolve => setTimeout(resolve, 330));
+    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 10, character: 0 },
+      'polling should catch editor scrolling when VS Code skips a visible-range event');
     await reopenedSecond.deliver({ type: 'scrollTo', line: 0 });
   } finally {
     Module._load = originalLoad;

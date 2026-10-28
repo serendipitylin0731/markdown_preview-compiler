@@ -592,7 +592,7 @@ function renderDocument(preserve = true, followCursor = false) {
   if (followCursor && mode === 'preview' && settings.syncScroll) scrollPreviewCursor();
   if (mode === 'pdf') document.getElementById('documentPane')!.style.display = 'none';
 }
-function scrollToLine(line: number) {
+function scrollToLine(line: number, character = 0) {
   const pane = document.querySelector<HTMLElement>('.document-scroll');
   if (!pane) return;
   const nodes = [...document.querySelectorAll<HTMLElement>('#documentBody .md-block')];
@@ -603,7 +603,17 @@ function scrollToLine(line: number) {
   const firstLine = Number(node.dataset.line);
   const lineCount = Math.max(1, block?.raw.split('\n').length || 1);
   const fraction = Math.max(0, Math.min(1, (line - firstLine) / lineCount));
-  const offset = nodeRect.top - paneRect.top + pane.scrollTop + nodeRect.height * fraction;
+  const content = node.querySelector<HTMLElement>('.block-content');
+  const offsets = sourceOffsets(source);
+  const sourceOffset = Math.min(source.length, (offsets[line] ?? source.length) + Math.max(0, character));
+  const code = block?.kind === 'code' ? content?.querySelector<HTMLElement>('pre code') : null;
+  const codeStart = code && block ? Math.max(0, block.raw.indexOf('\n') + 1) : 0;
+  const codeOffset = code && block ? block.raw.slice(codeStart, Math.max(codeStart, sourceOffset - block.start)).replace(/\r/g, '').length : 0;
+  const textRect = code ? textRectAt(code, codeOffset) : content && block ?
+    textRectAt(content, cursorTextOffset(block, content.textContent || '', sourceOffset)) : null;
+  const mappedTop = textRect && textRect.height > 0 && textRect.top >= nodeRect.top - 2 && textRect.top <= nodeRect.bottom + 2 ?
+    textRect.top : nodeRect.top + nodeRect.height * fraction;
+  const offset = mappedTop - paneRect.top + pane.scrollTop;
   const target = Math.max(0, Math.min(offset - 24, pane.scrollHeight - pane.clientHeight));
   if (Math.abs(pane.scrollTop - target) < 2) return;
   pane.scrollTop = target;
@@ -2732,7 +2742,8 @@ window.addEventListener('message', (event: MessageEvent) => {
     autoExport = !!message.autoExport;
     cursorPosition = message.cursor && Number.isInteger(message.cursor.line) && Number.isInteger(message.cursor.character) ? message.cursor : null;
     source = message.source; version = message.version; pdfDirty = true; renderDocument(false);
-    if (mode === 'preview' && settings.syncScroll && Number.isInteger(message.visibleLine)) scrollToLine(message.visibleLine);
+    if (mode === 'preview' && settings.syncScroll && Number.isInteger(message.visiblePosition?.line))
+      scrollToLine(message.visiblePosition.line, message.visiblePosition.character);
     if (mode === 'pdf' || autoExport) schedulePdf(true);
     else if (mode === 'preview') schedulePdf();
   } else if (message.type === 'documentChanged') {
@@ -2796,7 +2807,7 @@ window.addEventListener('message', (event: MessageEvent) => {
   } else if (message.type === 'fonts') {
     setFonts(message.fonts || [], message.importedId);
   } else if (message.type === 'scrollToLine') {
-    if (mode === 'preview' && settings.syncScroll && Number.isInteger(message.line)) scrollToLine(message.line);
+    if (mode === 'preview' && settings.syncScroll && Number.isInteger(message.line)) scrollToLine(message.line, message.character);
   } else if (message.type === 'cursorPosition') {
     if (Number.isInteger(message.line) && Number.isInteger(message.character)) {
       cursorPosition = { line: message.line, character: message.character };
