@@ -1773,10 +1773,40 @@ test('user scrolling the preview moves the editor without echoing programmatic p
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'scrollTo'));
   const sent = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'scrollTo'));
   assert.ok(sent.at(-1).line > 20, `preview wheel did not move editor: ${JSON.stringify(sent)}`);
+  const userTop = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
   await deliver(page, { type: 'scrollToLine', line: 6 });
   await page.waitForTimeout(100);
   assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'scrollTo').length), sent.length,
     'editor-driven preview movement echoed back to the editor');
+  assert.ok(Math.abs(await page.locator('.document-scroll').evaluate(pane => pane.scrollTop) - userTop) < 2,
+    'source reveal interrupted an active preview scroll');
+  await page.close();
+});
+
+test('continuous preview wheel scrolling reaches the end despite mismatched editor viewport echoes', async () => {
+  const page = await browser.newPage({ viewport: { width: 900, height: 540 } });
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = Array.from({ length: 75 }, (_, index) => `第 ${index + 1} 段。`).join('\n\n');
+  await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true },
+    exportSettings: {}, templates: [] });
+  const pane = page.locator('.document-scroll');
+  await pane.hover();
+  let previous = 0;
+  for (let index = 0; index < 12; index++) {
+    await page.mouse.wheel(0, 420);
+    await page.waitForTimeout(65);
+    await deliver(page, { type: 'scrollToLine', line: 0, character: 0 });
+    const top = await pane.evaluate(element => element.scrollTop);
+    assert.ok(top >= previous - 2, `preview jumped backward on wheel ${index}: ${previous} -> ${top}`);
+    previous = top;
+  }
+  const max = await pane.evaluate(element => element.scrollHeight - element.clientHeight);
+  assert.ok(previous >= max - 100, `preview got stuck before the end: ${previous} / ${max}`);
+  await page.waitForTimeout(460);
+  await deliver(page, { type: 'scrollToLine', line: 6, character: 0 });
+  assert.ok(await pane.evaluate(element => element.scrollTop) < previous - 300,
+    'editor scrolling did not regain control after preview scrolling stopped');
   await page.close();
 });
 

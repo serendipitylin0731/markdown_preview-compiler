@@ -244,6 +244,9 @@ let preserveTaskPreviewPosition = false;
 let previewScrollIntentUntil = 0;
 let programmaticPreviewScrollTop: number | null = null;
 let lastSentPreviewScrollLine = -1;
+let previewScrollTimer: number | undefined;
+let sourceLineCount = 1;
+let blockLineCounts: number[] = [];
 let marginDraft: any = null;
 let coverDraft: Record<string, [number, number]> | null = null;
 let fonts: any[] = [];
@@ -558,6 +561,7 @@ function buildShell() {
     });
     documentPane.addEventListener('scroll', onDocumentScroll, { passive: true });
   }
+  window.addEventListener('blur', () => { previewScrollIntentUntil = 0; });
   const pdfPages = document.getElementById('pdfPages');
   pdfPages?.addEventListener('scroll', () => {
     const slots = [...pdfPages.querySelectorAll<HTMLElement>('.pdf-page-slot')];
@@ -570,6 +574,7 @@ function buildShell() {
 }
 function renderDocument(preserve = true, followCursor = false) {
   previewScrollIntentUntil = 0;
+  window.clearTimeout(previewScrollTimer); previewScrollTimer = undefined;
   const pane = document.querySelector<HTMLElement>('.document-scroll');
   const previous = preserve ? pane?.scrollTop || 0 : 0;
   const body = document.getElementById('documentBody')!;
@@ -582,6 +587,8 @@ function renderDocument(preserve = true, followCursor = false) {
   });
   frontMatter = parseFrontMatter(source);
   blocks = parseBlocks(source, frontMatter);
+  sourceLineCount = sourceOffsets(source).length - 1;
+  blockLineCounts = blocks.map(block => Math.max(1, block.raw.split('\n').length));
   body.innerHTML = tagMarkup(frontMatter.tags) + blocks.map((block, i) => blockMarkup(block, i, mode === 'visual')).join('') ||
     (frontMatter.raw ? '' : '<div class="empty">开始编写 Markdown…</div>');
   const nextDetails = [...body.querySelectorAll<HTMLDetailsElement>('details')];
@@ -752,16 +759,33 @@ function onDocumentScroll() {
     if (Math.abs(pane.scrollTop - expected) < 2) return;
   }
   if (mode !== 'preview' || !settings.syncScroll || Date.now() > previewScrollIntentUntil) return;
+  if (previewScrollTimer !== undefined) return;
+  previewScrollTimer = window.setTimeout(() => {
+    previewScrollTimer = undefined;
+    if (Date.now() <= previewScrollIntentUntil) sendPreviewScrollPosition();
+  }, 45);
+}
+function sendPreviewScrollPosition() {
+  const pane = document.querySelector<HTMLElement>('.document-scroll');
+  if (!pane) return;
   const anchor = pane.getBoundingClientRect().top + 24;
-  const nodes = [...document.querySelectorAll<HTMLElement>('#documentBody .md-block')];
-  const node = nodes.findLast(item => item.getBoundingClientRect().top <= anchor) || nodes[0];
+  const nodes = document.querySelectorAll<HTMLElement>('#documentBody .md-block');
+  if (!nodes.length) return;
+  let low = 0, high = nodes.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (nodes[middle].getBoundingClientRect().top <= anchor) low = middle + 1;
+    else high = middle;
+  }
+  const node = nodes[Math.max(0, low - 1)];
   if (!node) return;
-  const block = blocks[Number(node.dataset.index)];
+  const index = Number(node.dataset.index);
+  const block = blocks[index];
   if (!block) return;
   const rect = node.getBoundingClientRect();
-  const lineCount = Math.max(1, block.raw.split('\n').length);
+  const lineCount = blockLineCounts[index] || 1;
   const fraction = Math.max(0, Math.min(1, (anchor - rect.top) / Math.max(1, rect.height)));
-  const line = Math.max(0, Math.min(sourceOffsets(source).length - 2, block.line + Math.floor(fraction * lineCount)));
+  const line = Math.max(0, Math.min(sourceLineCount - 1, block.line + Math.floor(fraction * lineCount)));
   if (line !== lastSentPreviewScrollLine) {
     lastSentPreviewScrollLine = line;
     post('scrollTo', { line });
@@ -2857,6 +2881,7 @@ window.addEventListener('message', (event: MessageEvent) => {
     setFonts(message.fonts || [], message.importedId);
   } else if (message.type === 'scrollToLine') {
     if (mode === 'preview' && settings.syncScroll && Number.isInteger(message.line)) {
+      if (Date.now() <= previewScrollIntentUntil) return;
       lastSentPreviewScrollLine = -1;
       scrollToLine(message.line, message.character);
     }

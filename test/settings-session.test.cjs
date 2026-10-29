@@ -135,9 +135,11 @@ test('PDF layout persists by file across previews without mixing files', async (
     const beforePreviewScroll = reopenedSecond.messages.length;
     await reopenedSecond.deliver({ type: 'scrollTo', line: 0 });
     assert.deepEqual(reveals, [0], 'user preview scrolling should move the editor');
-    editor.visibleRanges = [{ start: { line: 0, character: 0 } }];
+    editor.visibleRanges = [{ start: { line: 5, character: 0 } }];
     visibleRangeListener({ textEditor: editor, visibleRanges: editor.visibleRanges });
-    assert.equal(reopenedSecond.messages.length, beforePreviewScroll, 'editor reveal must not echo back to preview');
+    assert.equal(reopenedSecond.messages.length, beforePreviewScroll,
+      'editor reveal must not echo back when source and preview line numbers differ');
+    await new Promise(resolve => setTimeout(resolve, 330));
     editor.visibleRanges = [{ start: { line: 20, character: 0 } }];
     visibleRangeListener({ textEditor: editor, visibleRanges: editor.visibleRanges });
     assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 20, character: 0 });
