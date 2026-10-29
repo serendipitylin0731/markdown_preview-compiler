@@ -124,10 +124,14 @@ test('PDF layout persists by file across previews without mixing files', async (
     const sent = reopenedSecond.messages.length;
     editor.visibleRanges = [{ start: { line: 4, character: 5 } }];
     selectionListener({ textEditor: editor, selections: [{ active: { line: 6, character: 0 } }] });
-    assert.equal(reopenedSecond.messages.length, sent, 'moving the caret without scrolling should not move the preview');
+    assert.equal(reopenedSecond.messages.length, sent + 1);
+    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'cursorPosition', line: 6, character: 0 });
     editor.visibleRanges = [{ start: { line: 8, character: 0 } }];
     selectionListener({ textEditor: editor, selections: [{ active: { line: 8, character: 0 } }] });
-    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 8, character: 0 });
+    assert.deepEqual(reopenedSecond.messages.slice(-2), [
+      { type: 'scrollToLine', line: 8, character: 0 },
+      { type: 'cursorPosition', line: 8, character: 0 }
+    ]);
     editor.visibleRanges = [{ start: { line: 10, character: 0 } }];
     await new Promise(resolve => setTimeout(resolve, 330));
     assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 10, character: 0 },

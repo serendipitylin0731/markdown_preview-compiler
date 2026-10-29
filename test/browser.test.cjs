@@ -954,7 +954,7 @@ test('source cursor stays visible in split preview across headings, code, formul
   for (const [marker, selector] of [['起始标题', 'h1'], ['code-line-012', 'pre code'], ['E = mc^2', '.math-block'],
     ['详细说明', 'details summary']]) {
     const line = lines.findIndex(value => value.includes(marker));
-    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3), typing: true });
+    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3) });
     const visible = await page.evaluate(selector => {
       const pane = document.querySelector('.document-scroll').getBoundingClientRect();
       const target = document.querySelector(`#documentBody ${selector}`).getBoundingClientRect();
@@ -998,13 +998,13 @@ test('split preview follows a long code line and text around many images after t
   await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
   const lastImage = lines.findIndex(value => value.includes('图片9'));
   await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true }, exportSettings: {}, templates: [],
-    cursor: { line: lastImage, character: 4 } });
+    cursor: { line: 0, character: 0 } });
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'resolveImage'), { timeout: 5000 });
   const requests = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'resolveImage'));
   const data = `data:image/png;base64,${fs.readFileSync(path.resolve(__dirname, '..', 'assets/logo.png')).toString('base64')}`;
   for (const request of requests) await deliver(page, { type: 'imageResolved', id: request.id, data });
   await page.waitForFunction(() => document.querySelector('#documentBody img[alt="图片9"]')?.complete);
-  await deliver(page, { type: 'cursorPosition', line: lastImage, character: 4, typing: true });
+  await deliver(page, { type: 'cursorPosition', line: lastImage, character: 4 });
   await page.waitForFunction(() => {
     const pane = document.querySelector('.document-scroll').getBoundingClientRect();
     const image = document.querySelector('#documentBody img[alt="图片9"]')?.getBoundingClientRect();
@@ -1016,7 +1016,7 @@ test('split preview follows a long code line and text around many images after t
   ];
   for (const [marker, kind] of checks) {
     const line = lines.findIndex(value => value.includes(marker));
-    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3), typing: true });
+    await deliver(page, { type: 'cursorPosition', line, character: Math.max(0, lines[line].indexOf(marker) + 3) });
     const visible = await page.evaluate(({ marker, kind }) => {
       const pane = document.querySelector('.document-scroll').getBoundingClientRect();
       let rect;
@@ -1642,7 +1642,7 @@ test('checking a task in split preview keeps the current scroll position until t
   await page.waitForTimeout(250);
   const after = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
   assert.ok(Math.abs(after - before) < 2, `task click moved preview from ${before} to ${after}`);
-  await deliver(page, { type: 'cursorPosition', line: 0, character: 1, typing: true });
+  await deliver(page, { type: 'cursorPosition', line: 0, character: 1 });
   const followed = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
   assert.ok(followed < before - 300, `a later source cursor move did not resume following: ${followed}`);
   await page.close();
@@ -1810,7 +1810,7 @@ test('continuous preview wheel scrolling reaches the end despite mismatched edit
   await page.close();
 });
 
-test('split preview follows editor scrolling independently of the caret and follows the caret only while typing', async () => {
+test('split preview follows editor scrolling and returns to a newly moved caret', async () => {
   const page = await browser.newPage({ viewport: { width: 900, height: 500 } });
   await page.goto(base + '/?mode=preview');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
@@ -1821,7 +1821,8 @@ test('split preview follows editor scrolling independently of the caret and foll
   const initial = await pane.evaluate(element => element.scrollTop);
   assert.ok(initial > 400, `initial editor viewport was not followed: ${initial}`);
   await deliver(page, { type: 'cursorPosition', line: 0, character: 1 });
-  assert.ok(Math.abs(await pane.evaluate(element => element.scrollTop) - initial) < 2);
+  assert.ok(await pane.evaluate(element => element.scrollTop) < initial - 300,
+    'moving the editor caret did not return the preview to it');
   await deliver(page, { type: 'scrollToLine', line: 6 });
   const nearTop = await pane.evaluate(element => element.scrollTop);
   assert.ok(nearTop < initial - 300, `editor wheel did not move preview: ${nearTop}`);

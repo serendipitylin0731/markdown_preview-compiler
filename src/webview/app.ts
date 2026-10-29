@@ -2887,8 +2887,10 @@ window.addEventListener('message', (event: MessageEvent) => {
     }
   } else if (message.type === 'cursorPosition') {
     if (Number.isInteger(message.line) && Number.isInteger(message.character)) {
+      const moved = !cursorPosition || cursorPosition.line !== message.line || cursorPosition.character !== message.character;
       cursorPosition = { line: message.line, character: message.character };
-      if (message.typing && mode === 'preview' && settings.syncScroll) {
+      if (moved && mode === 'preview' && settings.syncScroll) {
+        previewScrollIntentUntil = 0;
         preserveTaskPreviewPosition = false;
         scrollPreviewCursor();
       }

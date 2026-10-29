@@ -430,6 +430,11 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.window.onDidChangeTextEditorSelection(event => {
       syncEditorViewport(event.textEditor, event.textEditor.visibleRanges, true);
+      const position = event.selections[0]?.active;
+      if (!position || !settings(event.textEditor.document.uri).syncScroll) return;
+      for (const state of panels) if (state.mode === 'preview' &&
+          state.uri.toString() === event.textEditor.document.uri.toString())
+        post(state, { type: 'cursorPosition', line: position.line, character: position.character });
     }),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('markdownCompiler') || event.affectsConfiguration('editor.fontFamily'))
