@@ -5,8 +5,8 @@ const Module = require('node:module');
 
 test('PDF layout persists by file across previews without mixing files', async () => {
   const uri = file => ({ fsPath: file, toString: () => `file://${file}` });
-  const first = { uri: uri('/workspace/one.md'), languageId: 'markdown', version: 1, getText: () => '# One' };
-  const second = { uri: uri('/workspace/two.md'), languageId: 'markdown', version: 1, getText: () => '# Two' };
+  const first = { uri: uri('/workspace/one.md'), languageId: 'markdown', version: 1, lineCount: 100, getText: () => '# One' };
+  const second = { uri: uri('/workspace/two.md'), languageId: 'markdown', version: 1, lineCount: 100, getText: () => '# Two' };
   const documents = [first, second];
   const commands = new Map();
   const panels = [];
@@ -20,6 +20,8 @@ test('PDF layout persists by file across previews without mixing files', async (
   const vscode = {
     Uri: { joinPath: (base, ...parts) => uri(path.resolve(base.fsPath, ...parts)) },
     ViewColumn: { One: 1, Two: 2, Beside: 2 },
+    Range: class { constructor(line) { this.start = { line }; } },
+    TextEditorRevealType: { AtTop: 1 },
     workspace: {
       textDocuments: documents,
       openTextDocument: async requested => documents.find(doc => doc.uri.toString() === requested.toString()),
@@ -110,8 +112,10 @@ test('PDF layout persists by file across previews without mixing files', async (
     reopenedSecond.active = false;
     vscode.window.activeTextEditor = { document: second };
     await commands.get('markdownCompiler.split')();
+    const reveals = [];
     const editor = { document: second, selection: { active: { line: 0, character: 0 } },
-      visibleRanges: [{ start: { line: 3, character: 0 } }], setDecorations() {}, revealRange() { throw new Error('preview moved editor'); } };
+      visibleRanges: [{ start: { line: 3, character: 0 } }], setDecorations() {},
+      revealRange(range) { reveals.push(range.start.line); } };
     vscode.window.visibleTextEditors = [editor];
     await reopenedSecond.deliver({ type: 'ready' });
     assert.deepEqual(reopenedSecond.messages.at(-1).visiblePosition, { line: 3, character: 0 });
@@ -128,7 +132,15 @@ test('PDF layout persists by file across previews without mixing files', async (
     await new Promise(resolve => setTimeout(resolve, 330));
     assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 10, character: 0 },
       'polling should catch editor scrolling when VS Code skips a visible-range event');
+    const beforePreviewScroll = reopenedSecond.messages.length;
     await reopenedSecond.deliver({ type: 'scrollTo', line: 0 });
+    assert.deepEqual(reveals, [0], 'user preview scrolling should move the editor');
+    editor.visibleRanges = [{ start: { line: 0, character: 0 } }];
+    visibleRangeListener({ textEditor: editor, visibleRanges: editor.visibleRanges });
+    assert.equal(reopenedSecond.messages.length, beforePreviewScroll, 'editor reveal must not echo back to preview');
+    editor.visibleRanges = [{ start: { line: 20, character: 0 } }];
+    visibleRangeListener({ textEditor: editor, visibleRanges: editor.visibleRanges });
+    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 20, character: 0 });
   } finally {
     Module._load = originalLoad;
   }

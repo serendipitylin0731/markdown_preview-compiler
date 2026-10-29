@@ -10,6 +10,7 @@ const templateDrafts = new Map<Panel, Record<string, { file: string; name: strin
 const templateSlotPattern = /^(a4|a5|letter)-(portrait|landscape)-(body|cover)$/;
 const boundariesByUri = new Map<string, Array<{ line: number; page: number; type: string }>>();
 const editorViewportByUri = new Map<string, string>();
+const previewScrollEchoByUri = new Map<string, { line: number; until: number }>();
 let boundaryDecoration: vscode.TextEditorDecorationType;
 let lastDocument: vscode.Uri | undefined;
 let extensionContext: vscode.ExtensionContext;
@@ -103,6 +104,7 @@ async function openPanel(document: vscode.TextDocument, mode: Mode, column: vsco
     if (![...panels].some(other => other.uri.toString() === state.uri.toString())) {
       boundariesByUri.delete(state.uri.toString());
       editorViewportByUri.delete(state.uri.toString());
+      previewScrollEchoByUri.delete(state.uri.toString());
       refreshBoundaryDecorations();
     }
   });
@@ -127,6 +129,11 @@ function syncEditorViewport(editor: vscode.TextEditor, ranges: readonly vscode.R
   if (!start || !Number.isInteger(start.line)) return;
   const key = editor.document.uri.toString();
   const position = `${start.line}:${start.character}`;
+  const echo = previewScrollEchoByUri.get(key);
+  if (echo && Date.now() < echo.until && Math.abs(start.line - echo.line) <= 3) {
+    editorViewportByUri.set(key, position);
+    return;
+  }
   if (onlyIfChanged && editorViewportByUri.get(key) === position) return;
   editorViewportByUri.set(key, position);
   for (const state of panels) if (state.mode === 'preview' && state.uri.toString() === key)
@@ -325,6 +332,14 @@ async function handleMessage(state: Panel, message: any) {
       if (href && !href.startsWith('//') && !/^[a-z][\w+.-]*:/i.test(href)) {
         const target = vscode.Uri.joinPath(document.uri, '..', decodeURIComponent(href.split('#')[0]));
         await vscode.commands.executeCommand('vscode.open', target);
+      }
+    } else if (message.type === 'scrollTo') {
+      const editor = vscode.window.visibleTextEditors.find(item => item.document.uri.toString() === state.uri.toString());
+      if (state.mode === 'preview' && settings(state.uri).syncScroll && editor &&
+          Number.isInteger(message.line) && message.line >= 0 && message.line < document.lineCount) {
+        if (editor.visibleRanges[0]?.start.line === message.line) return;
+        previewScrollEchoByUri.set(state.uri.toString(), { line: message.line, until: Date.now() + 300 });
+        editor.revealRange(new vscode.Range(message.line, 0, message.line, 0), vscode.TextEditorRevealType.AtTop);
       }
     } else if (message.type === 'pageBoundaries') {
       boundariesByUri.set(state.uri.toString(), Array.isArray(message.boundaries) ? message.boundaries : []);

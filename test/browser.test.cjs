@@ -1759,24 +1759,24 @@ test('template import requires a body image and limits paper choices to supplied
   await page.close();
 });
 
-test('scrolling the preview does not send commands that move the editor', async () => {
+test('user scrolling the preview moves the editor without echoing programmatic preview scrolls', async () => {
   const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
   await page.goto(base + '/?mode=preview');
   await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
   const source = Array.from({ length: 35 }, (_, index) => `第 ${index + 1} 段正文。`).join('\n\n');
   await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true }, exportSettings: {}, templates: [] });
-  await page.locator('.document-scroll').evaluate(pane => pane.scrollTop = pane.scrollHeight);
-  await page.waitForTimeout(450);
-  const state = await page.evaluate(() => {
-    const pane = document.querySelector('.document-scroll');
-    const last = document.querySelector('#documentBody .md-block:last-child');
-    return { top: pane.scrollTop, max: pane.scrollHeight - pane.clientHeight,
-      bottomFraction: (last.getBoundingClientRect().bottom - pane.getBoundingClientRect().top) / pane.clientHeight,
-      sentScroll: window.__MDC_MESSAGES__.some(m => m.type === 'scrollTo') };
-  });
-  assert.ok(state.max > 0);
-  assert.ok(state.bottomFraction > 0.56 && state.bottomFraction < 0.76, `last content at ${state.bottomFraction}`);
-  assert.equal(state.sentScroll, false);
+  await deliver(page, { type: 'scrollToLine', line: 20 });
+  await page.waitForTimeout(80);
+  assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'scrollTo').length), 0);
+  await page.locator('.document-scroll').hover();
+  await page.mouse.wheel(0, 680);
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'scrollTo'));
+  const sent = await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'scrollTo'));
+  assert.ok(sent.at(-1).line > 20, `preview wheel did not move editor: ${JSON.stringify(sent)}`);
+  await deliver(page, { type: 'scrollToLine', line: 6 });
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'scrollTo').length), sent.length,
+    'editor-driven preview movement echoed back to the editor');
   await page.close();
 });
 

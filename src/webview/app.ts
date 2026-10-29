@@ -241,6 +241,9 @@ let showBreaks = false;
 let pageBoundaries: Array<{ line: number; page: number; type: string }> = [];
 let cursorPosition: { line: number; character: number } | null = null;
 let preserveTaskPreviewPosition = false;
+let previewScrollIntentUntil = 0;
+let programmaticPreviewScrollTop: number | null = null;
+let lastSentPreviewScrollLine = -1;
 let marginDraft: any = null;
 let coverDraft: Record<string, [number, number]> | null = null;
 let fonts: any[] = [];
@@ -538,7 +541,23 @@ function buildShell() {
     setScale(pdfScale * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
   }, { passive: false });
   const documentPane = root.querySelector<HTMLElement>('.document-scroll');
-  if (documentPane) new ResizeObserver(() => documentPane.style.setProperty('--preview-height', `${documentPane.clientHeight}px`)).observe(documentPane);
+  if (documentPane) {
+    new ResizeObserver(() => documentPane.style.setProperty('--preview-height', `${documentPane.clientHeight}px`)).observe(documentPane);
+    const scrollIntent = () => { previewScrollIntentUntil = Date.now() + 400; };
+    documentPane.addEventListener('wheel', scrollIntent, { passive: true });
+    documentPane.addEventListener('touchmove', scrollIntent, { passive: true });
+    documentPane.addEventListener('pointerdown', event => {
+      if (event.clientX >= documentPane.getBoundingClientRect().right - 20) scrollIntent();
+    });
+    documentPane.addEventListener('pointermove', event => {
+      if (event.buttons && event.clientX >= documentPane.getBoundingClientRect().right - 20) scrollIntent();
+    });
+    documentPane.addEventListener('keydown', event => {
+      if (/^(ArrowDown|ArrowUp|PageDown|PageUp|Home|End|Space)$/.test(event.code) &&
+          !(event.target as HTMLElement).closest('input, button, textarea, select, summary')) scrollIntent();
+    });
+    documentPane.addEventListener('scroll', onDocumentScroll, { passive: true });
+  }
   const pdfPages = document.getElementById('pdfPages');
   pdfPages?.addEventListener('scroll', () => {
     const slots = [...pdfPages.querySelectorAll<HTMLElement>('.pdf-page-slot')];
@@ -550,6 +569,7 @@ function buildShell() {
   }, { passive: true });
 }
 function renderDocument(preserve = true, followCursor = false) {
+  previewScrollIntentUntil = 0;
   const pane = document.querySelector<HTMLElement>('.document-scroll');
   const previous = preserve ? pane?.scrollTop || 0 : 0;
   const body = document.getElementById('documentBody')!;
@@ -588,9 +608,15 @@ function renderDocument(preserve = true, followCursor = false) {
   void localizeImages(body).then(resync);
   void renderMermaid(body).then(resync);
   void document.fonts.ready.then(resync);
-  if (pane) pane.scrollTop = previous;
+  if (pane) setPreviewScrollTop(pane, previous);
   if (followCursor && mode === 'preview' && settings.syncScroll) scrollPreviewCursor();
   if (mode === 'pdf') document.getElementById('documentPane')!.style.display = 'none';
+}
+function setPreviewScrollTop(pane: HTMLElement, top: number) {
+  const target = Math.max(0, Math.min(top, pane.scrollHeight - pane.clientHeight));
+  if (Math.abs(pane.scrollTop - target) < 1) return;
+  programmaticPreviewScrollTop = target;
+  pane.scrollTop = target;
 }
 function scrollToLine(line: number, character = 0) {
   const pane = document.querySelector<HTMLElement>('.document-scroll');
@@ -615,8 +641,7 @@ function scrollToLine(line: number, character = 0) {
     textRect.top : nodeRect.top + nodeRect.height * fraction;
   const offset = mappedTop - paneRect.top + pane.scrollTop;
   const target = Math.max(0, Math.min(offset - 24, pane.scrollHeight - pane.clientHeight));
-  if (Math.abs(pane.scrollTop - target) < 2) return;
-  pane.scrollTop = target;
+  setPreviewScrollTop(pane, target);
 }
 function cursorBlock() {
   if (!cursorPosition || !blocks.length) return null;
@@ -716,7 +741,31 @@ function scrollPreviewCursor() {
   const paneRect = pane.getBoundingClientRect();
   if (target.top >= paneRect.top + 24 && target.bottom <= paneRect.bottom - 24) return;
   const top = pane.scrollTop + target.top - paneRect.top - pane.clientHeight * .4;
-  pane.scrollTop = Math.max(0, Math.min(top, pane.scrollHeight - pane.clientHeight));
+  setPreviewScrollTop(pane, top);
+}
+function onDocumentScroll() {
+  const pane = document.querySelector<HTMLElement>('.document-scroll');
+  if (!pane) return;
+  if (programmaticPreviewScrollTop !== null) {
+    const expected = programmaticPreviewScrollTop;
+    programmaticPreviewScrollTop = null;
+    if (Math.abs(pane.scrollTop - expected) < 2) return;
+  }
+  if (mode !== 'preview' || !settings.syncScroll || Date.now() > previewScrollIntentUntil) return;
+  const anchor = pane.getBoundingClientRect().top + 24;
+  const nodes = [...document.querySelectorAll<HTMLElement>('#documentBody .md-block')];
+  const node = nodes.findLast(item => item.getBoundingClientRect().top <= anchor) || nodes[0];
+  if (!node) return;
+  const block = blocks[Number(node.dataset.index)];
+  if (!block) return;
+  const rect = node.getBoundingClientRect();
+  const lineCount = Math.max(1, block.raw.split('\n').length);
+  const fraction = Math.max(0, Math.min(1, (anchor - rect.top) / Math.max(1, rect.height)));
+  const line = Math.max(0, Math.min(sourceOffsets(source).length - 2, block.line + Math.floor(fraction * lineCount)));
+  if (line !== lastSentPreviewScrollLine) {
+    lastSentPreviewScrollLine = line;
+    post('scrollTo', { line });
+  }
 }
 function selectedBlockElement(): HTMLElement | null {
   const selection = window.getSelection();
@@ -2807,7 +2856,10 @@ window.addEventListener('message', (event: MessageEvent) => {
   } else if (message.type === 'fonts') {
     setFonts(message.fonts || [], message.importedId);
   } else if (message.type === 'scrollToLine') {
-    if (mode === 'preview' && settings.syncScroll && Number.isInteger(message.line)) scrollToLine(message.line, message.character);
+    if (mode === 'preview' && settings.syncScroll && Number.isInteger(message.line)) {
+      lastSentPreviewScrollLine = -1;
+      scrollToLine(message.line, message.character);
+    }
   } else if (message.type === 'cursorPosition') {
     if (Number.isInteger(message.line) && Number.isInteger(message.character)) {
       cursorPosition = { line: message.line, character: message.character };
