@@ -2,7 +2,7 @@
   "name": "markdown-preview-compiler",
   "displayName": "Markdown Preview & Compiler",
   "description": "Markdown source, visual editing, live PDF preview and export.",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "icon": "assets/logo.png",
   "publisher": "serendipity-lin",
   "repository": {

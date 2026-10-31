@@ -112,7 +112,7 @@ md.renderer.rules.math_block = (tokens, i) => {
 };
 md.block.ruler.before('fence', 'admonition', (state, start, end, silent) => {
   const opening = state.src.slice(state.bMarks[start] + state.tShift[start], state.eMarks[start]).trim();
-  const match = opening.match(/^:::([a-z][\w-]*)(?:\[([^\]]*)\])?$/i);
+  const match = opening.match(/^:::([a-z][\w-]*)(?:\[([^\]]*)\]|\s+(.+))?$/i);
   if (!match) return false;
   let depth = 1, close = -1, fence = '';
   for (let line = start + 1; line < end; line++) {
@@ -123,13 +123,13 @@ md.block.ruler.before('fence', 'admonition', (state, start, end, silent) => {
       continue;
     }
     if (marker) { fence = marker[1]; continue; }
-    if (/^:::[a-z][\w-]*(?:\[[^\]]*\])?$/i.test(value)) depth++;
+    if (/^:::[a-z][\w-]*(?:\[[^\]]*\]|\s+.+)?$/i.test(value)) depth++;
     else if (/^:::$/.test(value) && --depth === 0) { close = line; break; }
   }
   if (close < 0) return false;
   if (!silent) {
     const token = state.push('admonition', 'details', 0);
-    token.meta = { kind: match[1].toLowerCase(), title: match[2]?.trim() || '' };
+    token.meta = { kind: match[1].toLowerCase(), title: (match[2] || match[3] || '').trim() };
     token.content = state.getLines(start + 1, close, state.blkIndent, false);
     token.map = [start, close + 1];
   }
@@ -242,6 +242,7 @@ let pageBoundaries: Array<{ line: number; page: number; type: string }> = [];
 let cursorPosition: { line: number; character: number } | null = null;
 let preserveTaskPreviewPosition = false;
 let previewScrollIntentUntil = 0;
+let cursorFollowUntil = 0;
 let programmaticPreviewScrollTop: number | null = null;
 let lastSentPreviewScrollLine = -1;
 let previewScrollTimer: number | undefined;
@@ -344,7 +345,7 @@ function parseBlocks(input: string, metadata = parseFrontMatter(input)): Block[]
     const raw = input.slice(start, end);
     let protectedBlock = /^\s*(?:`{3,}|~{3,}|\$\$|<!--|<[^!]|\[[^\]]+\]:|:::[a-z])/i.test(raw) || /<[^>]+>/.test(raw);
     const kind = /^\s*(`{3,}|~{3,})/.test(raw) && !/^\s*(`{3,}|~{3,})\s*mermaid\b/i.test(raw) ? 'code' :
-      /^\s*\$\$/.test(raw) ? 'math' : /^\s*:::[a-z][\w-]*(?:\[[^\]]*\])?\s*$/im.test(raw.split('\n')[0]) ? 'admonition' : '';
+      /^\s*\$\$/.test(raw) ? 'math' : /^\s*:::[a-z][\w-]*(?:\[[^\]]*\]|\s+.+)?\s*$/im.test(raw.split('\n')[0]) ? 'admonition' : '';
     if (kind === 'code' || kind === 'math') protectedBlock = false;
     const next = merged[i + 1]?.index ?? tokens.length;
     let html = md.renderer.render(tokens.slice(index, next), md.options, env);
@@ -723,7 +724,7 @@ function textRectAt(element: HTMLElement, offset: number): DOMRect | null {
   range.setStart(last, Math.max(0, last.length - 1)); range.setEnd(last, last.length);
   return range.getClientRects()[0] || null;
 }
-function scrollPreviewCursor() {
+function scrollPreviewCursor(force = false, visibleStartLine?: number, visibleEndLine?: number) {
   const pane = document.querySelector<HTMLElement>('.document-scroll');
   if (!pane || !cursorPosition || preserveTaskPreviewPosition) return;
   const found = cursorBlock();
@@ -746,8 +747,12 @@ function scrollPreviewCursor() {
       textRectAt(content, cursorTextOffset(found.block, content.textContent || '', found.offset)) : null) ||
     content.getBoundingClientRect();
   const paneRect = pane.getBoundingClientRect();
-  if (target.top >= paneRect.top + 24 && target.bottom <= paneRect.bottom - 24) return;
-  const top = pane.scrollTop + target.top - paneRect.top - pane.clientHeight * .4;
+  if (!force && target.top >= paneRect.top + 24 && target.bottom <= paneRect.bottom - 24) return;
+  const inEditorViewport = Number.isInteger(visibleStartLine) && Number.isInteger(visibleEndLine) &&
+    visibleEndLine! > visibleStartLine! && cursorPosition.line >= visibleStartLine! && cursorPosition.line <= visibleEndLine!;
+  const fraction = inEditorViewport ? Math.max(.16, Math.min(.84,
+    .16 + .68 * (cursorPosition.line - visibleStartLine!) / (visibleEndLine! - visibleStartLine!))) : .4;
+  const top = pane.scrollTop + target.top - paneRect.top - pane.clientHeight * fraction;
   setPreviewScrollTop(pane, top);
 }
 function onDocumentScroll() {
@@ -2883,7 +2888,10 @@ window.addEventListener('message', (event: MessageEvent) => {
     if (mode === 'preview' && settings.syncScroll && Number.isInteger(message.line)) {
       if (Date.now() <= previewScrollIntentUntil) return;
       lastSentPreviewScrollLine = -1;
-      scrollToLine(message.line, message.character);
+      if (Date.now() <= cursorFollowUntil && cursorPosition && Number.isInteger(message.endLine) &&
+          cursorPosition.line >= message.line && cursorPosition.line <= message.endLine)
+        scrollPreviewCursor(true, message.line, message.endLine);
+      else scrollToLine(message.line, message.character);
     }
   } else if (message.type === 'cursorPosition') {
     if (Number.isInteger(message.line) && Number.isInteger(message.character)) {
@@ -2892,7 +2900,8 @@ window.addEventListener('message', (event: MessageEvent) => {
       if (moved && mode === 'preview' && settings.syncScroll) {
         previewScrollIntentUntil = 0;
         preserveTaskPreviewPosition = false;
-        scrollPreviewCursor();
+        cursorFollowUntil = Date.now() + 250;
+        scrollPreviewCursor(true, message.visibleStartLine, message.visibleEndLine);
       }
     }
   } else if (message.type === 'exportNow') {

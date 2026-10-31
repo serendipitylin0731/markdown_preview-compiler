@@ -941,6 +941,29 @@ test('triple-colon info blocks fold in preview and expand in PDF', async () => {
   await pdf.close();
 });
 
+test('info and warning blocks accept titles after a space', async () => {
+  const source = ':::info Hint for 1\n第一段。\n\n:::warning Watch out\n嵌套警告。\n:::\n\n第二段。\n:::\n';
+  const preview = await browser.newPage();
+  await preview.goto(base + '/?mode=preview');
+  await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(preview, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  assert.deepEqual(await preview.locator('#documentBody details.admonition > summary').allTextContents(),
+    ['Hint for 1', 'Watch out']);
+  assert.equal(await preview.locator('#documentBody .render-warning').count(), 0);
+  await preview.locator('#documentBody details.admonition > summary').first().click();
+  assert.equal(await preview.locator('#documentBody details.admonition-info p').count(), 3);
+  await preview.close();
+
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(pdf, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.deepEqual(await pdf.locator('#printHost details.admonition > summary').allTextContents(),
+    ['Hint for 1', 'Watch out']);
+  await pdf.close();
+});
+
 test('source cursor stays visible in split preview across headings, code, formulas, and HTML', async () => {
   const lines = ['# 起始标题', '', ...Array.from({ length: 36 }, (_, i) => `段落 ${i} 的正文内容。`), '',
     '```txt', ...Array.from({ length: 14 }, (_, i) => `code-line-${String(i).padStart(3, '0')}`), '```', '',
@@ -1835,6 +1858,28 @@ test('split preview follows editor scrolling and returns to a newly moved caret'
   await deliver(page, { type: 'documentChanged', source: '编辑中' + source, version: 3,
     cursor: { line: 0, character: 3 }, followCursor: true });
   assert.ok(await pane.evaluate(element => element.scrollTop) < nearBottom - 300);
+  await page.close();
+});
+
+test('a moved caret aligns with its editor viewport while later source scrolling still follows', async () => {
+  const page = await browser.newPage({ viewport: { width: 900, height: 500 } });
+  await page.goto(base + '/?mode=preview');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  const source = Array.from({ length: 90 }, (_, index) => `第 ${index + 1} 段正文。`).join('\n\n');
+  await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true },
+    exportSettings: {}, templates: [] });
+  await deliver(page, { type: 'cursorPosition', line: 80, character: 3, visibleStartLine: 60, visibleEndLine: 100 });
+  await deliver(page, { type: 'scrollToLine', line: 72, endLine: 112 });
+  const aligned = await page.evaluate(() => {
+    const pane = document.querySelector('.document-scroll').getBoundingClientRect();
+    const caret = document.querySelector('#documentBody .md-block[data-line="80"]').getBoundingClientRect();
+    return (caret.top - pane.top) / pane.height;
+  });
+  assert.ok(aligned > .2 && aligned < .7, `caret lost its editor context: ${aligned}`);
+  await page.waitForTimeout(280);
+  await deliver(page, { type: 'scrollToLine', line: 20, endLine: 50 });
+  const scrollTop = await page.locator('.document-scroll').evaluate(pane => pane.scrollTop);
+  assert.ok(scrollTop < 1400, `source scroll did not regain control: ${scrollTop}`);
   await page.close();
 });
 

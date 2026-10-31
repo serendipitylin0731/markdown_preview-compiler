@@ -126,6 +126,7 @@ function visiblePositionFor(uri: vscode.Uri) {
 function syncEditorViewport(editor: vscode.TextEditor, ranges: readonly vscode.Range[], onlyIfChanged = false) {
   if (!settings(editor.document.uri).syncScroll) return;
   const start = ranges[0]?.start;
+  const end = ranges.at(-1)?.end;
   if (!start || !Number.isInteger(start.line)) return;
   const key = editor.document.uri.toString();
   const position = `${start.line}:${start.character}`;
@@ -136,7 +137,8 @@ function syncEditorViewport(editor: vscode.TextEditor, ranges: readonly vscode.R
   if (onlyIfChanged && editorViewportByUri.get(key) === position) return;
   editorViewportByUri.set(key, position);
   for (const state of panels) if (state.mode === 'preview' && state.uri.toString() === key)
-    post(state, { type: 'scrollToLine', line: start.line, character: start.character });
+    post(state, { type: 'scrollToLine', line: start.line, character: start.character,
+      ...(end && Number.isInteger(end.line) ? { endLine: end.line } : {}) });
 }
 function pdfLayoutKey(uri: vscode.Uri) { return `pdfLayout:${uri.toString()}`; }
 function templatesFor(state: Panel) {
@@ -429,12 +431,15 @@ export function activate(context: vscode.ExtensionContext) {
       syncEditorViewport(event.textEditor, event.visibleRanges);
     }),
     vscode.window.onDidChangeTextEditorSelection(event => {
-      syncEditorViewport(event.textEditor, event.textEditor.visibleRanges, true);
       const position = event.selections[0]?.active;
       if (!position || !settings(event.textEditor.document.uri).syncScroll) return;
+      const visibleStartLine = event.textEditor.visibleRanges[0]?.start.line;
+      const visibleEndLine = event.textEditor.visibleRanges.at(-1)?.end?.line;
       for (const state of panels) if (state.mode === 'preview' &&
           state.uri.toString() === event.textEditor.document.uri.toString())
-        post(state, { type: 'cursorPosition', line: position.line, character: position.character });
+        post(state, { type: 'cursorPosition', line: position.line, character: position.character,
+          ...(Number.isInteger(visibleStartLine) ? { visibleStartLine } : {}),
+          ...(Number.isInteger(visibleEndLine) ? { visibleEndLine } : {}) });
     }),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('markdownCompiler') || event.affectsConfiguration('editor.fontFamily'))

@@ -119,19 +119,19 @@ test('PDF layout persists by file across previews without mixing files', async (
     vscode.window.visibleTextEditors = [editor];
     await reopenedSecond.deliver({ type: 'ready' });
     assert.deepEqual(reopenedSecond.messages.at(-1).visiblePosition, { line: 3, character: 0 });
-    visibleRangeListener({ textEditor: editor, visibleRanges: [{ start: { line: 4, character: 5 } }] });
-    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 4, character: 5 });
+    visibleRangeListener({ textEditor: editor, visibleRanges: [{ start: { line: 4, character: 5 }, end: { line: 12, character: 0 } }] });
+    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 4, character: 5, endLine: 12 });
     const sent = reopenedSecond.messages.length;
-    editor.visibleRanges = [{ start: { line: 4, character: 5 } }];
+    editor.visibleRanges = [{ start: { line: 4, character: 5 }, end: { line: 12, character: 0 } }];
     selectionListener({ textEditor: editor, selections: [{ active: { line: 6, character: 0 } }] });
     assert.equal(reopenedSecond.messages.length, sent + 1);
-    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'cursorPosition', line: 6, character: 0 });
+    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'cursorPosition', line: 6, character: 0,
+      visibleStartLine: 4, visibleEndLine: 12 });
     editor.visibleRanges = [{ start: { line: 8, character: 0 } }];
     selectionListener({ textEditor: editor, selections: [{ active: { line: 8, character: 0 } }] });
-    assert.deepEqual(reopenedSecond.messages.slice(-2), [
-      { type: 'scrollToLine', line: 8, character: 0 },
-      { type: 'cursorPosition', line: 8, character: 0 }
-    ]);
+    assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'cursorPosition', line: 8, character: 0,
+      visibleStartLine: 8 },
+      'moving the caret should not first scroll to the editor viewport');
     editor.visibleRanges = [{ start: { line: 10, character: 0 } }];
     await new Promise(resolve => setTimeout(resolve, 330));
     assert.deepEqual(reopenedSecond.messages.at(-1), { type: 'scrollToLine', line: 10, character: 0 },
