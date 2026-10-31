@@ -176,6 +176,23 @@ let source = '';
 let version = 0;
 let mode = boot.mode;
 let settings: any = {};
+let appearance = { fontFamily: '', theme: 'auto' };
+const commonFonts = [
+  { name: '系统无衬线', family: 'system-ui, sans-serif' },
+  { name: '系统衬线', family: 'serif' },
+  { name: '微软雅黑', family: '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif' },
+  { name: '宋体', family: 'SimSun, "Songti SC", "Noto Serif CJK SC", serif' },
+  { name: '黑体', family: 'SimHei, "Heiti SC", "Noto Sans CJK SC", sans-serif' },
+  { name: '楷体', family: 'KaiTi, STKaiti, serif' },
+  { name: '仿宋', family: 'FangSong, STFangsong, serif' },
+  { name: '苹方', family: '"PingFang SC", "Microsoft YaHei", sans-serif' },
+  { name: '思源黑体 / Noto Sans', family: '"Source Han Sans SC", "Noto Sans CJK SC", sans-serif' },
+  { name: '思源宋体 / Noto Serif', family: '"Source Han Serif SC", "Noto Serif CJK SC", serif' },
+  { name: 'Arial', family: 'Arial, sans-serif' },
+  { name: 'Times New Roman', family: '"Times New Roman", serif' },
+  { name: 'Georgia', family: 'Georgia, serif' },
+  { name: '等宽字体', family: 'monospace' }
+];
 const defaultExportSettings: any = {
   paper: 'a4', orientation: 'portrait', marginTop: 24, marginRight: 22, marginBottom: 24, marginLeft: 22,
   fontSize: 11, lineHeight: 1.5, paragraphGap: 8, template: 'simple', cover: false, toc: false,
@@ -271,6 +288,24 @@ function safeHref(value: string) {
   return !!href && (/^(https?:|mailto:|#)/i.test(href) || (!/^[a-z][\w+.-]*:/i.test(href) && !href.startsWith('//')));
 }
 function post(type: string, extra: any = {}) { vscode.postMessage({ type, ...extra }); }
+function fontOptions(current: string, defaultName: string) {
+  const options = [{ family: '', name: defaultName }, ...commonFonts, ...fonts];
+  if (current && !options.some(font => font.family === current)) options.push({ family: current, name: current });
+  return options.map(font => `<option value="${esc(font.family)}" ${font.family === current ? 'selected' : ''}>${esc(font.name)}</option>`).join('');
+}
+function applyAppearance() {
+  root.dataset.previewTheme = appearance.theme;
+  document.documentElement.style.setProperty('--editor-font', appearance.fontFamily || settings.fontFamily || 'system-ui, sans-serif');
+  const theme = document.getElementById('previewTheme') as HTMLSelectElement | null;
+  if (theme) theme.value = appearance.theme;
+  const font = document.getElementById('previewFont') as HTMLSelectElement | null;
+  if (font) {
+    const current = mode === 'pdf' ? exportSettings.fontFamily || '' : appearance.fontFamily;
+    font.innerHTML = fontOptions(current, mode === 'pdf' ? 'PDF 默认字体' : '跟随编辑器');
+    font.value = current;
+  }
+  document.querySelectorAll<HTMLElement>('#documentBody .mermaid-source').forEach(updateDiagramTheme);
+}
 function toast(message: string, error = false) {
   const el = document.getElementById('status'); if (!el) return;
   el.textContent = message; el.classList.toggle('error', error);
@@ -440,15 +475,19 @@ async function renderMermaid(container: HTMLElement) {
       if (/^\s*(?:flowchart|graph)\b/i.test(graph) && !svg?.querySelector('.nodes text'))
         throw new Error('流程图文字未能渲染');
       if (!element.closest('#printHost')) {
-        const background = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g)?.slice(0, 3).map(Number) || [];
-        element.classList.toggle('mermaid-dark', background.length === 3 &&
-          background[0] * .2126 + background[1] * .7152 + background[2] * .0722 < 128);
+        updateDiagramTheme(element);
       }
     } catch (error) {
       element.textContent = `Mermaid 渲染失败：${error instanceof Error ? error.message : error}`;
       element.classList.add('render-error');
     }
   }
+}
+function updateDiagramTheme(element: HTMLElement) {
+  const background = getComputedStyle(appearance.theme === 'auto' ? document.body : root).backgroundColor
+    .match(/[\d.]+/g)?.slice(0, 3).map(Number) || [];
+  element.classList.toggle('mermaid-dark', background.length === 3 &&
+    background[0] * .2126 + background[1] * .7152 + background[2] * .0722 < 128);
 }
 async function rasterizePrintDiagrams(container: HTMLElement) {
   for (const svg of container.querySelectorAll<SVGSVGElement>('.mermaid-source svg, .math-inline svg, .math-block svg')) {
@@ -509,6 +548,11 @@ function toolbar() {
     <button data-action="deleteRow">−行</button><button data-action="deleteColumn">−列</button></span>
     <button data-action="inlineCode">行内代码</button><button data-action="code">代码块</button><button data-action="inlineMath">行内公式</button><button data-action="math">独立公式</button><button data-action="mermaid">图表</button>
     <button data-action="break">分页</button>
+  </div><div class="toolbar-group appearance-tools">
+    <label for="previewFont">字体</label><select id="previewFont" aria-label="预览字体"></select>
+    <label for="previewTheme">主题</label><select id="previewTheme" aria-label="预览主题">
+      <option value="auto">跟随 VS Code</option><option value="light">浅色</option><option value="dark">深色</option>
+    </select>
   </div><div class="toolbar-group push pdf-actions" ${mode === 'pdf' ? '' : 'hidden'}>
     <button data-action="settings">排版设置</button>
     <button data-action="export" class="primary">导出 PDF</button>
@@ -625,7 +669,7 @@ function renderDocument(preserve = true, followCursor = false) {
   body.querySelectorAll<HTMLElement>('.math-inline').forEach(math => math.contentEditable = 'false');
   if (mode === 'visual') body.querySelectorAll<HTMLInputElement>('input[type=checkbox]').forEach(input => input.disabled = false);
   else if (mode === 'preview') body.querySelectorAll<HTMLInputElement>('input.task-list-item-checkbox').forEach(input => input.disabled = false);
-  document.documentElement.style.setProperty('--editor-font', settings.fontFamily || 'system-ui, sans-serif');
+  document.documentElement.style.setProperty('--editor-font', appearance.fontFamily || settings.fontFamily || 'system-ui, sans-serif');
   document.documentElement.style.setProperty('--editor-size', `${settings.fontSize || 16}px`);
   document.documentElement.style.setProperty('--editor-line', String(settings.lineHeight || 1.6));
   document.documentElement.style.setProperty('--editor-paragraph-gap', `${settings.paragraphGap ?? 10}px`);
@@ -1407,10 +1451,8 @@ function settingField(name: string, label: string, type = 'text', min = '') {
 }
 function fontField(name: string, label: string) {
   const current = exportSettings[name] || '';
-  const options = [{ family: '', name: '默认（中文宋体，英文跟随编辑器）' }, ...fonts];
-  if (current && !options.some(font => font.family === current)) options.push({ family: current, name: current });
-  return `<label>${label}<select id="set-${name}">${options.map(font =>
-    `<option value="${esc(font.family)}" ${font.family === current ? 'selected' : ''}>${esc(font.name)}</option>`).join('')}</select></label>`;
+  const options = fontOptions(current, '默认（中文宋体，英文跟随编辑器）');
+  return `<label>${label}<select id="set-${name}">${options}</select></label>`;
 }
 function paperSizeFor(paper: string, orientation: string): [number, number] {
   const sizes: any = { a4: [210, 297], a5: [148, 210], letter: [215.9, 279.4] };
@@ -1631,6 +1673,21 @@ function templateOptions(paper = exportSettings.paper, orientation = exportSetti
 }
 function onChange(event: Event) {
   const target = event.target as HTMLInputElement;
+  if (target.id === 'previewTheme') {
+    if (['auto', 'light', 'dark'].includes(target.value)) appearance.theme = target.value;
+    applyAppearance(); post('saveAppearance', { value: appearance });
+    return;
+  }
+  if (target.id === 'previewFont') {
+    if (mode === 'pdf') {
+      exportSettings.fontFamily = target.value;
+      pdfDirty = true; post('saveSettings', { value: exportSettings }); schedulePdf(true);
+    } else {
+      appearance.fontFamily = target.value;
+      applyAppearance(); post('saveAppearance', { value: appearance });
+    }
+    return;
+  }
   if (mode === 'preview' && target.matches('input.task-list-item-checkbox')) {
     togglePreviewTask(target);
     return;
@@ -1769,7 +1826,7 @@ function onClick(event: MouseEvent) {
     exportSettings.coverPositions = Object.fromEntries(['title','subtitle','author','date'].map(key => [key,
       coverDraft![key].map(value => Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 50)]));
     normalizeExportSettings();
-    pdfDirty = true; post('saveSettings', { value: exportSettings }); closeDialog(); schedulePdf();
+    pdfDirty = true; post('saveSettings', { value: exportSettings }); closeDialog(); applyAppearance(); schedulePdf();
     if (exportSettings.pendingTemplateBrush) toast('在预览编辑中框选正文，可将模板应用到该范围。');
     return;
   }
@@ -2809,13 +2866,11 @@ function setFonts(items: any[], importedId?: string) {
     for (const key of ['fontFamily', 'titleFontFamily']) {
       const select = document.getElementById('set-' + key) as HTMLSelectElement;
       const previous = select.value;
-      const options = [{ family: '', name: '默认（中文宋体，英文跟随编辑器）' }, ...fonts];
-      if (previous && !options.some(font => font.family === previous)) options.push({ family: previous, name: previous });
-      select.innerHTML = options.map(font =>
-        `<option value="${esc(font.family)}">${esc(font.name)}</option>`).join('');
+      select.innerHTML = fontOptions(previous, '默认（中文宋体，英文跟随编辑器）');
       select.value = key === 'fontFamily' && importedId ? fonts.find(font => font.id === importedId)?.family || previous : previous;
     }
   }
+  applyAppearance();
   void fontsReady.then(() => { if (layoutPages.length) { pdfDirty = true; schedulePdf(true); } });
 }
 window.addEventListener('message', (event: MessageEvent) => {
@@ -2829,8 +2884,8 @@ window.addEventListener('message', (event: MessageEvent) => {
     else request.resolve(message.data);
   } else if (message.type === 'document') {
     settings = message.settings || {}; exportSettings = { ...structuredClone(defaultExportSettings), ...(message.exportSettings || {}) };
-    if (exportSettings.fontFamily === 'Arial, sans-serif') exportSettings.fontFamily = '';
-    if (exportSettings.titleFontFamily === 'Georgia, serif') exportSettings.titleFontFamily = '';
+    appearance = { fontFamily: typeof message.appearance?.fontFamily === 'string' ? message.appearance.fontFamily : '',
+      theme: ['auto', 'light', 'dark'].includes(message.appearance?.theme) ? message.appearance.theme : 'auto' };
     normalizeExportSettings();
     templateBrush = mode === 'visual' ? exportSettings.pendingTemplateBrush || null : null;
     templates = message.templates || []; setFonts(message.fonts || []); autoUpdate = settings.autoUpdate !== false;
@@ -2877,8 +2932,13 @@ window.addEventListener('message', (event: MessageEvent) => {
     const autoUpdateToggle = document.getElementById('autoUpdate') as HTMLInputElement | null;
     if (autoUpdateToggle) autoUpdateToggle.checked = autoUpdate;
     pdfDirty = true; renderDocument(); schedulePdf();
+  } else if (message.type === 'appearance') {
+    appearance = { fontFamily: typeof message.value?.fontFamily === 'string' ? message.value.fontFamily : '',
+      theme: ['auto', 'light', 'dark'].includes(message.value?.theme) ? message.value.theme : 'auto' };
+    applyAppearance();
   } else if (message.type === 'exportSettings') {
     exportSettings = { ...exportSettings, ...message.value }; normalizeExportSettings();
+    applyAppearance();
     const tagsToggle = document.getElementById('pdfTags') as HTMLInputElement | null;
     if (tagsToggle) tagsToggle.checked = exportSettings.showTags;
     templateBrush = mode === 'visual' ? exportSettings.pendingTemplateBrush || null : null;

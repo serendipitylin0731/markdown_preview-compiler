@@ -201,6 +201,7 @@ async function handleMessage(state: Panel, message: any) {
     if (message.type === 'ready') {
       post(state, { type: 'document', source: document.getText(), version: document.version, settings: settings(document.uri),
         exportSettings: state.exportSettings || extensionContext.globalState.get<Record<string, any>>(pdfLayoutKey(state.uri), {}),
+        appearance: extensionContext.globalState.get('previewAppearance', {}),
         templates: templatesFor(state), fonts: fontsFor(state),
         autoExport: state.autoExport, cursor: cursorFor(state.uri), visiblePosition: visiblePositionFor(state.uri) });
       state.autoExport = false;
@@ -241,6 +242,11 @@ async function handleMessage(state: Panel, message: any) {
       await extensionContext.globalState.update('lastMode', 'visual');
     } else if (message.type === 'pdf') {
       await showPdf(document);
+    } else if (message.type === 'saveAppearance') {
+      const value = { fontFamily: typeof message.value?.fontFamily === 'string' ? message.value.fontFamily.slice(0, 300) : '',
+        theme: ['auto', 'light', 'dark'].includes(message.value?.theme) ? message.value.theme : 'auto' };
+      await extensionContext.globalState.update('previewAppearance', value);
+      for (const other of panels) if (other !== state) post(other, { type: 'appearance', value });
     } else if (message.type === 'saveSettings') {
       state.exportSettings = { ...message.value };
       await extensionContext.globalState.update(pdfLayoutKey(state.uri), state.exportSettings);

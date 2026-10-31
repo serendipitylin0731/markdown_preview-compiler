@@ -395,7 +395,7 @@ test('PDF uses the editor font and a readable light print palette in a dark them
   await page.addStyleTag({ content: ':root { --vscode-foreground:#cccccc; --vscode-editor-foreground:#cccccc; --vscode-textCodeBlock-background:#3c3c3c; --vscode-panel-border:#3c3c3c; --vscode-textLink-foreground:#4daafc; }' });
   await deliver(page, { type: 'document', source: '# 字体测试\n\n正文 [链接](https://example.com)\n\n```js\nconst value = 1;\n```\n',
     version: 1, settings: { editorFontFamily: '"DejaVu Sans Mono", "Noto Sans CJK SC", monospace' },
-    exportSettings: { fontFamily: 'Arial, sans-serif', titleFontFamily: 'Georgia, serif' }, templates: [] });
+    exportSettings: {}, templates: [] });
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
   const style = await page.evaluate(() => {
     const content = document.querySelector('#printHost .print-content');
@@ -1782,6 +1782,59 @@ test('template import requires a body image and limits paper choices to supplied
   await page.close();
 });
 
+test('preview font and light or dark theme can be selected and restored', async () => {
+  const source = '# 外观\n\n正文内容\n\n```js\nconst x = 1;\n```\n';
+  for (const mode of ['preview', 'visual']) {
+    const page = await browser.newPage();
+    await page.goto(base + '/?mode=' + mode);
+    await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+    await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+    await page.locator('#previewFont').selectOption({ label: '宋体' });
+    await page.locator('#previewTheme').selectOption('dark');
+    const state = await page.evaluate(() => ({
+      font: getComputedStyle(document.querySelector('#documentBody p')).fontFamily,
+      code: getComputedStyle(document.querySelector('#documentBody code')).fontFamily,
+      background: getComputedStyle(document.getElementById('app')).backgroundColor,
+      color: getComputedStyle(document.querySelector('#documentBody p')).color,
+      saved: window.__MDC_MESSAGES__.findLast(m => m.type === 'saveAppearance').value
+    }));
+    assert.match(state.font, /SimSun/);
+    assert.match(state.code, /monospace/i);
+    assert.equal(state.background, 'rgb(30, 30, 30)');
+    assert.equal(state.color, 'rgb(226, 230, 235)');
+    assert.equal(state.saved.theme, 'dark');
+    await deliver(page, { type: 'documentChanged', source: source + '\n追加内容\n', version: 2 });
+    assert.match(await page.locator('#documentBody p').first().evaluate(element => getComputedStyle(element).fontFamily), /SimSun/);
+    await page.locator('#previewTheme').selectOption('light');
+    assert.equal(await page.locator('#app').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(255, 255, 255)');
+    const saved = await page.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'saveAppearance').value);
+    await page.reload();
+    await deliver(page, { type: 'document', source, version: 1, settings: {}, appearance: saved, exportSettings: {}, templates: [] });
+    assert.equal(await page.locator('#previewTheme').inputValue(), 'light');
+    assert.equal(await page.locator('#previewFont').inputValue(), saved.fontFamily);
+    await page.close();
+  }
+});
+
+test('PDF preview font selection applies to the saved file layout', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '# 标题\n\n正文。', version: 1,
+    settings: {}, appearance: { fontFamily: 'serif', theme: 'dark' }, exportSettings: {}, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  await page.locator('#previewFont').selectOption({ label: 'Arial' });
+  await page.waitForFunction(() => /Arial/.test(getComputedStyle(document.querySelector('#printHost .print-content')).fontFamily), null, { timeout: 30000 });
+  const saved = await page.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'saveSettings').value);
+  assert.equal(saved.fontFamily, 'Arial, sans-serif');
+  await page.reload();
+  await deliver(page, { type: 'document', source: '# 标题\n\n正文。', version: 1,
+    settings: {}, appearance: { fontFamily: 'serif', theme: 'dark' }, exportSettings: saved, templates: [] });
+  assert.equal(await page.locator('#previewFont').inputValue(), 'Arial, sans-serif');
+  assert.equal(await page.locator('#previewTheme').inputValue(), 'dark');
+  await page.close();
+});
+
 test('Ctrl wheel zooms split and visual previews without scrolling the editor', async () => {
   for (const mode of ['preview', 'visual']) {
     const page = await browser.newPage({ viewport: { width: 900, height: 540 } });
@@ -1960,7 +2013,8 @@ test('PDF layout uses a dragged content rectangle and imported font', async () =
   await page.locator('button[data-action=settings]').click();
   assert.equal(await page.locator('#set-marginTop').inputValue(), '24');
   assert.match(await page.locator('#marginText').textContent(), /上 24、右 22、下 24、左 22/);
-  assert.equal(await page.locator('#set-fontFamily option').count(), 2);
+  assert.equal(await page.locator('#set-fontFamily option[value="mdc-font-sample"]').count(), 1);
+  assert.equal(await page.locator('#previewFont option[value="mdc-font-sample"]').count(), 1);
   await page.locator('#marginSheet').scrollIntoViewIfNeeded();
   const sheet = await page.locator('#marginSheet').boundingBox();
   await page.mouse.click(sheet.x + 18, sheet.y + 26);

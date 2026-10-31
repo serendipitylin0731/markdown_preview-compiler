@@ -77,6 +77,7 @@ test('PDF layout persists by file across previews without mixing files', async (
     await one.deliver({ type: 'ready' });
     assert.deepEqual(one.messages.at(-1).exportSettings, {}, 'old global layout must be ignored');
     assert.deepEqual(one.messages.at(-1).cursor, { line: 4, character: 2 });
+    await one.deliver({ type: 'saveAppearance', value: { fontFamily: 'serif', theme: 'dark' } });
     await one.deliver({ type: 'saveSettings', value: { paper: 'a5', marginTop: 37, template: 'academic',
       templateRanges: [{ start: 0, end: 1, id: 'technical' }] } });
     await one.deliver({ type: 'visual' });
@@ -90,6 +91,11 @@ test('PDF layout persists by file across previews without mixing files', async (
     const two = panels.at(-1);
     await two.deliver({ type: 'ready' });
     assert.deepEqual(two.messages.at(-1).exportSettings, {}, 'another file must open with defaults');
+    assert.deepEqual(two.messages.at(-1).appearance, { fontFamily: 'serif', theme: 'dark' },
+      'preview appearance must survive opening another file');
+    await two.deliver({ type: 'saveAppearance', value: { fontFamily: 'serif', theme: 'light' } });
+    assert.deepEqual(one.messages.at(-1), { type: 'appearance', value: { fontFamily: 'serif', theme: 'light' } },
+      'appearance changes must update other open previews');
     await two.deliver({ type: 'saveSettings', value: { paper: 'letter', marginTop: 18 } });
 
     one.dispose(); two.active = false;

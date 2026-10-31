@@ -10,15 +10,44 @@
 [hidden] { display: none !important; }
 html, body, #app { height: 100%; margin: 0; overflow: hidden; }
 body { font-family: var(--vscode-font-family, system-ui); color: var(--vscode-foreground); background: var(--vscode-editor-background); }
+#app { display: flex; flex-direction: column; }
+#app[data-preview-theme="light"] {
+  color-scheme: light; color: #20242a; background: #fff;
+  --vscode-foreground: #20242a; --vscode-editor-foreground: #20242a; --vscode-editor-background: #fff;
+  --vscode-editorWidget-background: #f1f3f5; --vscode-sideBar-background: #e9edf1;
+  --vscode-panel-border: #c3cbd3; --vscode-descriptionForeground: #596475;
+  --vscode-button-background: #2866a2; --vscode-button-foreground: #fff;
+  --vscode-button-secondaryBackground: #e8edf2; --vscode-button-secondaryHoverBackground: #dce4ec;
+  --vscode-input-background: #fff; --vscode-input-foreground: #20242a; --vscode-input-border: #aab4bf;
+  --vscode-textCodeBlock-background: #f1f3f5; --vscode-textLink-foreground: #155d94;
+  --vscode-textBlockQuote-border: #aab4bf; --vscode-textBlockQuote-foreground: #495566;
+  --vscode-focusBorder: #2376bb; --vscode-errorForeground: #b42318;
+}
+#app[data-preview-theme="dark"] {
+  color-scheme: dark; color: #e2e6eb; background: #1e1e1e;
+  --vscode-foreground: #e2e6eb; --vscode-editor-foreground: #e2e6eb; --vscode-editor-background: #1e1e1e;
+  --vscode-editorWidget-background: #30343a; --vscode-sideBar-background: #25282d;
+  --vscode-panel-border: #505762; --vscode-descriptionForeground: #b6c0cc;
+  --vscode-button-background: #2866a2; --vscode-button-foreground: #fff;
+  --vscode-button-secondaryBackground: #363c44; --vscode-button-secondaryHoverBackground: #48515b;
+  --vscode-input-background: #30343a; --vscode-input-foreground: #e2e6eb; --vscode-input-border: #626b77;
+  --vscode-textCodeBlock-background: #2b3036; --vscode-textLink-foreground: #79b8ff;
+  --vscode-textBlockQuote-border: #7b8795; --vscode-textBlockQuote-foreground: #ccd4de;
+  --vscode-focusBorder: #67aaf0; --vscode-errorForeground: #ff8e86;
+}
+#app[data-preview-theme="light"] #documentBody .code-frame { --code-keyword: #8b3fb0; --code-string: #16743e; --code-number: #b05209; --code-comment: #697783; --code-title: #185fa3; --code-variable: #a53f47; --code-meta: #895c19; }
+#app[data-preview-theme="dark"] #documentBody .code-frame { --code-keyword: #c586c0; --code-string: #a5d6a7; --code-number: #d7ba7d; --code-comment: #8da39a; --code-title: #79c0ff; --code-variable: #e9a4a4; --code-meta: #dcdcaa; }
 button, select, input, textarea { font: inherit; }
 button { padding: 5px 8px; cursor: pointer; color: var(--vscode-foreground); background: var(--vscode-button-secondaryBackground, transparent); border: 1px solid var(--vscode-panel-border, #8886); border-radius: 4px; }
 button:hover { background: var(--vscode-button-secondaryHoverBackground, #8883); }
 button.primary, button.selected { color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #2866a2); }
-.toolbar { min-height: 44px; padding: 5px 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-bottom: 1px solid var(--vscode-panel-border, #8886); }
+.toolbar { flex-shrink: 0; min-height: 44px; padding: 5px 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-bottom: 1px solid var(--vscode-panel-border, #8886); }
 .toolbar-group { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .toolbar-group.push { margin-left: auto; }
 .toolbar select { max-width: 88px; }
-#workspace { height: calc(100% - 77px); display: flex; min-height: 0; }
+.appearance-tools { font-size: 12px; }
+.appearance-tools select { max-width: 135px; padding: 4px; color: var(--vscode-input-foreground, inherit); background: var(--vscode-input-background, transparent); border: 1px solid var(--vscode-input-border, #8886); border-radius: 4px; }
+#workspace { flex: 1; display: flex; min-height: 0; }
 #documentPane, #pdfPane { min-width: 0; min-height: 0; }
 #documentPane { flex: 1; }
 #pdfPane { display: none; background: var(--vscode-sideBar-background, #ededed); border-left: 1px solid var(--vscode-panel-border, #8886); }
@@ -122,7 +151,7 @@ body.vscode-dark .code-frame, body.vscode-high-contrast .code-frame { --code-key
 .pdf-page-glyph { font-size: 40px; line-height: 1; color: #a7b0bc; }
 .pdf-page-progress { width: min(45%, 180px); height: 5px; accent-color: #4b8db8; }
 .pdf-page-slot:not([data-state="generating"]) .pdf-page-progress { display: none; }
-#status { height: 33px; padding: 7px 10px; font-size: 12px; border-top: 1px solid var(--vscode-panel-border, #8886); white-space: nowrap; overflow: hidden; }
+#status { flex-shrink: 0; height: 33px; padding: 7px 10px; font-size: 12px; border-top: 1px solid var(--vscode-panel-border, #8886); white-space: nowrap; overflow: hidden; }
 #status.error { color: var(--vscode-errorForeground, #c44); }
 .dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: #0008; }
 .dialog-backdrop.hidden { display: none; }
