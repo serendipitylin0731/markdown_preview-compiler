@@ -1782,6 +1782,37 @@ test('template import requires a body image and limits paper choices to supplied
   await page.close();
 });
 
+test('Ctrl wheel zooms split and visual previews without scrolling the editor', async () => {
+  for (const mode of ['preview', 'visual']) {
+    const page = await browser.newPage({ viewport: { width: 900, height: 540 } });
+    await page.goto(base + '/?mode=' + mode);
+    await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+    const source = Array.from({ length: 50 }, (_, i) => `第 ${i + 1} 段正文。`).join('\n\n');
+    await deliver(page, { type: 'document', source, version: 1, settings: { syncScroll: true }, exportSettings: {}, templates: [] });
+    await page.locator('.document-scroll').evaluate(pane => { pane.scrollTop = 500; });
+    const before = await page.locator('#documentBody p').first().evaluate(element => element.getBoundingClientRect().height);
+    const prevented = await page.evaluate(() => {
+      const pane = document.querySelector('.document-scroll');
+      const rect = pane.getBoundingClientRect();
+      const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+      const target = document.elementFromPoint(x, y);
+      return !target.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true,
+        deltaY: -100, clientX: x, clientY: y }));
+    });
+    assert.equal(prevented, true);
+    const larger = await page.locator('#documentBody p').first().evaluate(element => element.getBoundingClientRect().height);
+    assert.ok(larger > before * 1.08, `${mode}: ${before} -> ${larger}`);
+    await deliver(page, { type: 'documentChanged', source: source + '\n\n新增内容', version: 2, followCursor: false });
+    assert.ok(await page.locator('#documentBody p').first().evaluate(element => element.getBoundingClientRect().height) > before * 1.08);
+    await page.locator('.document-scroll').dispatchEvent('wheel', { ctrlKey: true, deltaY: 100 });
+    const restored = await page.locator('#documentBody p').first().evaluate(element => element.getBoundingClientRect().height);
+    assert.ok(Math.abs(restored - before) < 1, `${mode}: ${before} -> ${restored}`);
+    await page.waitForTimeout(80);
+    assert.equal(await page.evaluate(() => window.__MDC_MESSAGES__.filter(m => m.type === 'scrollTo').length), 0);
+    await page.close();
+  }
+});
+
 test('user scrolling the preview moves the editor without echoing programmatic preview scrolls', async () => {
   const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
   await page.goto(base + '/?mode=preview');

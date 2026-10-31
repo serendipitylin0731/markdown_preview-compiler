@@ -24,7 +24,7 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 #pdfPane { display: none; background: var(--vscode-sideBar-background, #ededed); border-left: 1px solid var(--vscode-panel-border, #8886); }
 #workspace.pdf #pdfPane { display: flex; width: 100%; flex-direction: column; }
 .document-scroll { height: 100%; overflow: auto; }
-#documentBody { max-width: var(--editor-width); min-height: 100%; padding: 28px 36px max(80px, calc(var(--preview-height, 600px) / 3)); margin: auto; }
+#documentBody { zoom: var(--document-zoom, 1); max-width: var(--editor-width); min-height: 100%; padding: 28px 36px max(80px, calc(var(--preview-height, 600px) / 3)); margin: auto; }
 .document-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
 .document-tag { display: inline-block; padding: 2px 9px; border-radius: 999px; color: #24496a; background: #dcecf7; font: 12px/1.5 system-ui, sans-serif; }
 .markdown-body { font-family: var(--editor-font); font-size: var(--editor-size); line-height: var(--editor-line); overflow-wrap: anywhere; }

@@ -219,6 +219,7 @@ let pdfObserver: IntersectionObserver | null = null;
 const pdfSlotRenders = new WeakMap<HTMLElement, Promise<void>>();
 let pdfPage = 1;
 let pdfScale = 1;
+let documentScale = 1;
 let pdfBusy = false;
 let pdfQueued = false;
 let pdfDirty = true;
@@ -548,7 +549,25 @@ function buildShell() {
   if (documentPane) {
     new ResizeObserver(() => documentPane.style.setProperty('--preview-height', `${documentPane.clientHeight}px`)).observe(documentPane);
     const scrollIntent = () => { previewScrollIntentUntil = Date.now() + 400; };
-    documentPane.addEventListener('wheel', scrollIntent, { passive: true });
+    documentPane.addEventListener('wheel', event => {
+      if (!event.ctrlKey) { scrollIntent(); return; }
+      event.preventDefault();
+      if (!event.deltaY) return;
+      const body = document.getElementById('documentBody');
+      if (!body) return;
+      const next = Math.max(.3, Math.min(3, documentScale * (event.deltaY < 0 ? 1.1 : 1 / 1.1)));
+      if (next === documentScale) return;
+      const target = (document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null)
+        ?.closest<HTMLElement>('#documentBody .md-block') || body;
+      const before = target.getBoundingClientRect();
+      const vertical = before.height ? Math.max(0, Math.min(1, (event.clientY - before.top) / before.height)) : 0;
+      const horizontal = before.width ? Math.max(0, Math.min(1, (event.clientX - before.left) / before.width)) : 0;
+      documentScale = next;
+      documentPane.style.setProperty('--document-zoom', String(documentScale));
+      const after = target.getBoundingClientRect();
+      setPreviewScrollTop(documentPane, documentPane.scrollTop + after.top - before.top + (after.height - before.height) * vertical);
+      documentPane.scrollLeft += after.left - before.left + (after.width - before.width) * horizontal;
+    }, { passive: false });
     documentPane.addEventListener('touchmove', scrollIntent, { passive: true });
     documentPane.addEventListener('pointerdown', event => {
       if (event.clientX >= documentPane.getBoundingClientRect().right - 20) scrollIntent();
