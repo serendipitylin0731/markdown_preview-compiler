@@ -9,6 +9,13 @@ import mermaid from 'mermaid';
 import { mathjax } from 'mathjax-full/js/mathjax.js';
 import { TeX } from 'mathjax-full/js/input/tex.js';
 import 'mathjax-full/js/input/tex/ams/AmsConfiguration.js';
+import 'mathjax-full/js/input/tex/boldsymbol/BoldsymbolConfiguration.js';
+import 'mathjax-full/js/input/tex/mathtools/MathtoolsConfiguration.js';
+import 'mathjax-full/js/input/tex/cases/CasesConfiguration.js';
+import 'mathjax-full/js/input/tex/configmacros/ConfigMacrosConfiguration.js';
+import 'mathjax-full/js/input/tex/cancel/CancelConfiguration.js';
+import 'mathjax-full/js/input/tex/braket/BraketConfiguration.js';
+import 'mathjax-full/js/input/tex/physics/PhysicsConfiguration.js';
 import { SVG } from 'mathjax-full/js/output/svg.js';
 import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
 import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
@@ -27,7 +34,10 @@ mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base',
     lineColor: '#63758b', fontFamily: 'Arial, sans-serif' } });
 const mathAdaptor = liteAdaptor();
 RegisterHTMLHandler(mathAdaptor);
-const printMathDocument = mathjax.document('', { InputJax: new TeX({ packages: ['base', 'ams'] }),
+const printMathDocument = mathjax.document('', { InputJax: new TeX({
+  packages: ['base', 'ams', 'boldsymbol', 'mathtools', 'cases', 'configmacros', 'cancel', 'braket', 'physics'],
+  macros: { bm: ['\\boldsymbol{#1}', 1] }
+}),
   OutputJax: new SVG({ fontCache: 'local' }) });
 
 const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
@@ -107,7 +117,7 @@ md.block.ruler.before('fence', 'math_block', (state, start, end, silent) => {
   state.line = close + 1; return true;
 });
 md.renderer.rules.math_block = (tokens, i) => {
-  try { return `<div class="math-block">${katex.renderToString(tokens[i].content, { displayMode: true, throwOnError: false, trust: false, output: 'html' })}</div>`; }
+  try { return `<div class="math-block" data-tex="${esc(tokens[i].content)}">${katex.renderToString(tokens[i].content, { displayMode: true, throwOnError: false, trust: false, output: 'html' })}</div>`; }
   catch { return '<div class="render-error">公式无法渲染</div>'; }
 };
 md.block.ruler.before('fence', 'admonition', (state, start, end, silent) => {
@@ -208,7 +218,7 @@ function normalizeExportSettings() {
   exportSettings.pageNumberFormat = 'number';
   exportSettings.showTags = exportSettings.showTags !== false;
   const ranges: any = {
-    marginTop: [0, 60], marginRight: [0, 60], marginBottom: [18, 60], marginLeft: [0, 60],
+    marginTop: [0, 60], marginRight: [0, 60], marginBottom: [exportSettings.pageNumbers ? 18 : 0, 60], marginLeft: [0, 60],
     fontSize: [6, 36], lineHeight: [1, 3], paragraphGap: [0, 50],
     firstLineIndent: [0, 10], headingScale: [0.5, 3], headingGap: [0.2, 3]
   };
@@ -267,6 +277,19 @@ let previewScrollTimer: number | undefined;
 let sourceLineCount = 1;
 let blockLineCounts: number[] = [];
 let marginDraft: any = null;
+let marginPreset = 'custom';
+const marginPresets: Record<string, { marginTop: number; marginRight: number; marginBottom: number; marginLeft: number }> = {
+  wide: { marginTop: 30, marginRight: 30, marginBottom: 30, marginLeft: 30 },
+  moderate: { marginTop: 24, marginRight: 22, marginBottom: 24, marginLeft: 22 },
+  narrow: { marginTop: 12, marginRight: 12, marginBottom: 12, marginLeft: 12 }
+};
+function presetMargins(preset: string, pageNumbers: boolean) {
+  const values = marginPresets[preset];
+  return values ? { ...values, marginBottom: Math.max(pageNumbers ? 18 : 0, values.marginBottom) } : null;
+}
+function marginMinimum() {
+  return (document.getElementById('set-pageNumbers') as HTMLInputElement | null)?.checked ? 18 : 0;
+}
 let coverDraft: Record<string, [number, number]> | null = null;
 let fonts: any[] = [];
 let fontsReady: Promise<void> = Promise.resolve();
@@ -1510,6 +1533,11 @@ function updateMarginSheet() {
   selection.style.bottom = `${marginDraft.marginBottom / height * 100}%`;
   const number = document.getElementById('marginPageNumber') as HTMLElement;
   number.style.display = (document.getElementById('set-pageNumbers') as HTMLInputElement).checked ? '' : 'none';
+  const bottomField = document.getElementById('set-marginBottom') as HTMLInputElement;
+  bottomField.min = String(marginMinimum());
+  document.getElementById('marginHint')!.textContent = marginMinimum() ?
+    '页码固定在右下角；底边距至少 18 mm，避免碰到正文。' : '未显示页码时，底边距可设为 0 mm。';
+  (document.getElementById('marginPreset') as HTMLSelectElement).value = marginPreset;
   number.style.right = `${10 / width * 100}%`;
   number.style.bottom = `${7 / height * 100}%`;
   document.getElementById('marginText')!.textContent = `正文区域：上 ${Math.round(marginDraft.marginTop)}、右 ${Math.round(marginDraft.marginRight)}、下 ${Math.round(marginDraft.marginBottom)}、左 ${Math.round(marginDraft.marginLeft)} mm`;
@@ -1584,8 +1612,9 @@ function bindMarginSheet() {
     const [width, height] = paperSizeFor((document.getElementById('set-paper') as HTMLSelectElement).value,
       (document.getElementById('set-orientation') as HTMLSelectElement).value);
     const side = Math.min(60, Math.round(start.x * width));
-    const vertical = Math.max(18, Math.min(60, Math.round(start.y * height)));
-    marginDraft = { marginLeft: side, marginRight: side, marginTop: vertical, marginBottom: vertical };
+    const vertical = Math.max(0, Math.min(60, Math.round(start.y * height)));
+    marginPreset = 'custom';
+    marginDraft = { marginLeft: side, marginRight: side, marginTop: vertical, marginBottom: Math.max(marginMinimum(), vertical) };
     updateMarginSheet();
     sheet.setPointerCapture(event.pointerId);
   });
@@ -1596,9 +1625,9 @@ function bindMarginSheet() {
       (document.getElementById('set-orientation') as HTMLSelectElement).value);
     if (Math.abs(end.x - start.x) * width < 6 && Math.abs(end.y - start.y) * height < 6) return;
     const right = Math.max(0, Math.min(60, Math.round((1 - end.x) * width)));
-    const bottom = Math.max(18, Math.min(60, Math.round((1 - end.y) * height)));
+    const bottom = Math.max(marginMinimum(), Math.min(60, Math.round((1 - end.y) * height)));
     marginDraft.marginRight = Math.abs(right - marginDraft.marginLeft) <= 3 ? marginDraft.marginLeft : right;
-    marginDraft.marginBottom = Math.abs(bottom - marginDraft.marginTop) <= 3 ? marginDraft.marginTop : bottom;
+    marginDraft.marginBottom = Math.max(marginMinimum(), Math.abs(bottom - marginDraft.marginTop) <= 3 ? marginDraft.marginTop : bottom);
     updateMarginSheet();
   });
   sheet.addEventListener('pointerup', () => { start = null; });
@@ -1606,13 +1635,17 @@ function bindMarginSheet() {
 }
 function settingsDialog() {
   marginDraft = Object.fromEntries(['marginTop','marginRight','marginBottom','marginLeft'].map(key => [key, exportSettings[key]]));
+  marginPreset = Object.keys(marginPresets).find(key => {
+    const preset = presetMargins(key, !!exportSettings.pageNumbers)!;
+    return Object.keys(preset).every(name => preset[name] === marginDraft[name]);
+  }) || 'custom';
   coverDraft = Object.fromEntries(['title', 'subtitle', 'author', 'date'].map(key => [key, [...(exportSettings.coverPositions?.[key] || [50, 50])]])) as Record<string, [number, number]>;
   showDialog('PDF 排版设置', `<div class="setting-grid">
     <div class="template-settings"><strong>模板</strong><div class="template-list">${templateOptions()}</div><button data-action="importTemplate">导入图片模板</button><p>导入后选择有内页的纸张和方向；封面图片可选。应用模板后可在文档预览中框选文字，将模板用于该范围。</p></div>
     <label>纸张<select id="set-paper"><option value="a4">A4</option><option value="a5">A5</option><option value="letter">Letter</option></select></label>
     <label>方向<select id="set-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
-    <div class="margin-editor"><strong>页边距</strong><p>点击确定左上角，右下角自动对称；拖动可调整，靠近对称位置时自动吸附</p><div id="marginSheet" class="margin-sheet" role="img" aria-label="点击或拖动调整 PDF 正文区域"><div id="marginSelection" class="margin-selection"></div><span id="marginPageNumber" class="margin-page-number">1 / 3</span></div><p id="marginText"></p>
-      <div class="margin-inputs"><label>上 mm<input id="set-marginTop" type="number" min="0" max="60" step="1"></label><label>右 mm<input id="set-marginRight" type="number" min="0" max="60" step="1"></label><label>下 mm<input id="set-marginBottom" type="number" min="18" max="60" step="1"></label><label>左 mm<input id="set-marginLeft" type="number" min="0" max="60" step="1"></label></div><p>页码固定在右下角；底边距至少 18 mm，避免碰到正文。</p></div>
+    <div class="margin-editor"><strong>页边距</strong><label>预设<select id="marginPreset"><option value="wide">宽</option><option value="moderate">适中</option><option value="narrow">窄</option><option value="custom">自定义</option></select></label><p>点击确定左上角，右下角自动对称；拖动可调整，靠近对称位置时自动吸附</p><div id="marginSheet" class="margin-sheet" role="img" aria-label="点击或拖动调整 PDF 正文区域"><div id="marginSelection" class="margin-selection"></div><span id="marginPageNumber" class="margin-page-number">1</span></div><p id="marginText"></p>
+      <div class="margin-inputs"><label>上 mm<input id="set-marginTop" type="number" min="0" max="60" step="1"></label><label>右 mm<input id="set-marginRight" type="number" min="0" max="60" step="1"></label><label>下 mm<input id="set-marginBottom" type="number" min="0" max="60" step="1"></label><label>左 mm<input id="set-marginLeft" type="number" min="0" max="60" step="1"></label></div><p id="marginHint"></p></div>
     ${settingField('fontSize','正文字号 pt','number','6')}${settingField('lineHeight','行距','number','1')}
     ${settingField('paragraphGap','段落间距 px','number','0')}${settingField('firstLineIndent','首行缩进 em','number','0')}
     <label>对齐<select id="set-align"><option value="left">左对齐</option><option value="justify">两端对齐</option><option value="center">居中</option></select></label>
@@ -1692,6 +1725,17 @@ function onChange(event: Event) {
     togglePreviewTask(target);
     return;
   }
+  if (target.id === 'marginPreset' && marginDraft) {
+    marginPreset = target.value;
+    const preset = presetMargins(marginPreset, marginMinimum() > 0);
+    if (preset) marginDraft = preset;
+    updateMarginSheet(); return;
+  }
+  if (target.id === 'set-pageNumbers' && marginDraft) {
+    const preset = presetMargins(marginPreset, target.checked);
+    if (preset) marginDraft = preset;
+    else marginDraft.marginBottom = Math.max(marginMinimum(), marginDraft.marginBottom);
+  }
   if (target.id === 'set-paper' || target.id === 'set-orientation' || target.name === 'template' || target.id === 'set-pageNumbers') {
     if (target.id === 'set-paper' || target.id === 'set-orientation' || target.name === 'template') updateVariantSelectors();
     updateMarginSheet(); updateCoverSheet();
@@ -1699,8 +1743,9 @@ function onChange(event: Event) {
   if (['set-coverDate', 'set-coverSubtitle', 'set-coverAuthor'].includes(target.id)) updateCoverSheet();
   const marginKey = target.id.replace(/^set-/, '');
   if (marginDraft && ['marginTop','marginRight','marginBottom','marginLeft'].includes(marginKey)) {
-    const minimum = marginKey === 'marginBottom' ? 18 : 0;
+    const minimum = marginKey === 'marginBottom' ? marginMinimum() : 0;
     const value = Number(target.value);
+    marginPreset = 'custom';
     marginDraft[marginKey] = Number.isFinite(value) ? Math.max(minimum, Math.min(60, value)) : minimum;
     target.value = String(marginDraft[marginKey]); updateMarginSheet();
   }
@@ -2068,7 +2113,7 @@ function makePrintBlock(block: Block): HTMLElement {
   wrapper.querySelectorAll<HTMLDetailsElement>('details').forEach(details => details.open = true);
   for (const element of wrapper.querySelectorAll<HTMLElement>('.math-inline, .math-block')) {
     const display = element.classList.contains('math-block');
-    const tex = display ? block.raw.replace(/^\s*\$\$\s*/, '').replace(/\s*\$\$\s*$/, '') : element.dataset.tex || '';
+    const tex = element.dataset.tex || (display ? block.raw.replace(/^\s*\$\$\s*/, '').replace(/\s*\$\$\s*$/, '') : '');
     try {
       const result = printMathDocument.convert(tex, { display });
       const mathHtml = mathAdaptor.outerHTML(result);

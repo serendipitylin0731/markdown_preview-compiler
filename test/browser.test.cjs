@@ -1535,6 +1535,30 @@ $$`;
   await page.close();
 });
 
+test('PDF renders bold and nested cases as complete formula images', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  const body = String.raw`\begin{cases} 0,&r<a\\ \frac{Q}{4\pi\epsilon_0r^2}\bm{e}_r,&a<r<2a\\ 0,&r>2a \end{cases}`;
+  const source = `$$\n\\boldsymbol{E}=${body}\n$$\n\n:::info 示例\n\n$$\n\\bm{E}=${body}\n$$\n\n$$\n` +
+    String.raw`f(x)=\begin{dcases}0,&x<0\\ \frac{1}{x},&x>0\end{dcases}` + `\n$$\n\n:::\n`;
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await page.locator('#documentBody .math-block .katex').count(), 3);
+  const diagrams = page.locator('#printHost .math-block > img.print-diagram');
+  assert.equal(await diagrams.count(), 3, 'each whole cases formula should be converted into one image');
+  for (const diagram of await diagrams.all()) {
+    const size = await diagram.evaluate(image => ({ width: image.naturalWidth, height: image.naturalHeight }));
+    assert.ok(size.width > 150 && size.height > 100, JSON.stringify(size));
+  }
+  assert.equal(await page.locator('#printHost .math-block .katex').count(), 0);
+  assert.equal(await page.locator('#pdfPages canvas').count(), 1);
+  await page.locator('button[data-action=export]').click();
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'savePdf'));
+  assert.equal(await page.evaluate(() => atob(window.__MDC_MESSAGES__.findLast(m => m.type === 'savePdf').data).slice(0, 5)), '%PDF-');
+  await page.close();
+});
+
 test('PDF preserves the complete sum formula and Mermaid labels from the demo document', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');
@@ -2041,6 +2065,48 @@ test('PDF layout uses a dragged content rectangle and imported font', async () =
     shadow: getComputedStyle(node).textShadow }));
   assert.ok(codeStyle.size < codeStyle.parent);
   assert.equal(codeStyle.shadow, 'none');
+  await page.close();
+});
+
+test('margin presets adapt to page numbers and custom margins can reach zero', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '# 页面\n\n正文。', version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.locator('button[data-action=settings]').click();
+  assert.equal(await page.locator('#marginPreset').inputValue(), 'moderate');
+  await page.locator('#marginPreset').selectOption('wide');
+  assert.equal(await page.locator('#set-marginBottom').inputValue(), '30');
+  await page.locator('#marginPreset').selectOption('narrow');
+  assert.equal(await page.locator('#set-marginTop').inputValue(), '12');
+  assert.equal(await page.locator('#set-marginBottom').inputValue(), '18');
+  await page.locator('#set-pageNumbers').uncheck();
+  assert.equal(await page.locator('#set-marginBottom').inputValue(), '12');
+  assert.equal(await page.locator('#set-marginBottom').getAttribute('min'), '0');
+  await page.locator('#set-marginBottom').fill('0');
+  await page.locator('#set-marginBottom').dispatchEvent('change');
+  assert.equal(await page.locator('#marginPreset').inputValue(), 'custom');
+  await page.locator('#marginSheet').scrollIntoViewIfNeeded();
+  const sheet = await page.locator('#marginSheet').boundingBox();
+  await page.mouse.move(sheet.x + sheet.width * .2, sheet.y + sheet.height * .2);
+  await page.mouse.down();
+  await page.mouse.move(sheet.x + sheet.width * .85, sheet.y + sheet.height - .1, { steps: 5 });
+  await page.mouse.up();
+  assert.equal(await page.locator('#set-marginBottom').inputValue(), '0', 'dragging to the paper edge should allow zero bottom margin');
+  await page.locator('button[data-action=saveSettings]').click();
+  const saved = await page.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'saveSettings').value);
+  assert.equal(saved.pageNumbers, false);
+  assert.equal(saved.marginBottom, 0);
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await page.locator('#printHost .print-content').first().evaluate(element => getComputedStyle(element).bottom), '0px');
+  assert.equal(await page.locator('#printHost .print-page-number').first().textContent(), '');
+  await page.locator('button[data-action=settings]').click();
+  assert.equal(await page.locator('#set-marginBottom').inputValue(), '0');
+  await page.locator('#set-pageNumbers').check();
+  assert.equal(await page.locator('#set-marginBottom').inputValue(), '18');
+  assert.equal(await page.locator('#set-marginBottom').getAttribute('min'), '18');
+  await page.locator('#marginPreset').selectOption('moderate');
+  assert.equal(await page.locator('#set-marginBottom').inputValue(), '24');
   await page.close();
 });
 
