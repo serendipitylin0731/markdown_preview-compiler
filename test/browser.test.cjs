@@ -792,6 +792,61 @@ test('tester document PDF retains the full list and table', async () => {
   await page.close();
 });
 
+test('keyboard tags are readable keycaps in dark preview and printed PDF pixels', async () => {
+  const source = '快捷键：<kbd>Ctrl</kbd> + <kbd>Shift</kbd>。\n';
+  const preview = await browser.newPage();
+  await preview.goto(base + '/?mode=preview');
+  await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(preview, { type: 'document', source, version: 1, settings: {},
+    appearance: { theme: 'dark' }, exportSettings: {}, templates: [] });
+  const previewStyle = await preview.locator('#documentBody kbd').first().evaluate(node => {
+    const style = getComputedStyle(node);
+    return { background: style.backgroundColor, color: style.color, border: style.borderTopStyle, font: style.fontFamily };
+  });
+  assert.equal(previewStyle.background, 'rgb(48, 52, 58)');
+  assert.equal(previewStyle.color, 'rgb(226, 230, 235)');
+  assert.equal(previewStyle.border, 'solid');
+  assert.match(previewStyle.font, /monospace/i);
+  await preview.close();
+
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(pdf, { type: 'document', source, version: 1, settings: {},
+    appearance: { theme: 'dark' }, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const result = await pdf.evaluate(() => {
+    const node = document.querySelector('#printHost kbd');
+    const paper = node.closest('.print-page');
+    const canvas = document.querySelector('#pdfPages canvas');
+    const rect = node.getBoundingClientRect(), paperRect = paper.getBoundingClientRect();
+    const scaleX = canvas.width / paperRect.width, scaleY = canvas.height / paperRect.height;
+    const left = Math.round((rect.left - paperRect.left) * scaleX);
+    const top = Math.round((rect.top - paperRect.top) * scaleY);
+    const width = Math.round(rect.width * scaleX), height = Math.round(rect.height * scaleY);
+    const pixels = canvas.getContext('2d').getImageData(left, top, width, height).data;
+    let ink = 0, background = 0, border = 0;
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4, [r, g, b] = pixels.slice(i, i + 3);
+      if (x > 5 && x < width - 5 && y > 5 && y < height - 5 && r < 100 && g < 100 && b < 100) ink++;
+      if (r >= 235 && r < 250 && g >= 235 && g < 252 && b >= 235 && b < 255) background++;
+      if ((x < 4 || x >= width - 4 || y < 4 || y >= height - 4) && r >= 120 && r < 220 && g >= 120 && g < 225 && b >= 120 && b < 230) border++;
+    }
+    const style = getComputedStyle(node);
+    return { ink, background, border, text: node.textContent, color: style.color, fill: style.backgroundColor,
+      width: rect.width, nextLeft: document.querySelectorAll('#printHost kbd')[1].getBoundingClientRect().left - rect.right };
+  });
+  assert.equal(result.text, 'Ctrl');
+  assert.equal(result.color, 'rgb(32, 36, 42)');
+  assert.equal(result.fill, 'rgb(241, 243, 245)');
+  assert.ok(result.width > 20 && result.nextLeft > 0, JSON.stringify(result));
+  assert.ok(result.ink > 10 && result.background > 40 && result.border > 10, JSON.stringify(result));
+  await pdf.locator('button[data-action=export]').click();
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__.some(m => m.type === 'savePdf'));
+  assert.equal(await pdf.evaluate(() => atob(window.__MDC_MESSAGES__.findLast(m => m.type === 'savePdf').data).slice(0, 5)), '%PDF-');
+  await pdf.close();
+});
+
 test('HTML details enclose Markdown content and highlight syntax survives preview, editing, and PDF', async () => {
   const source = '- [ ] 题目\n<details>\n<summary>参考答案</summary>\n\n```bash\ngit init\n```\n\n- 第一条\n- 第二条\n\n</details>\n\n' +
     '<section class="note">\n\n<div><p>常用 <kbd>Ctrl</kbd>、<sup>2</sup> 和 <mark>HTML 高亮</mark></p></div>\n\n</section>\n\n' +

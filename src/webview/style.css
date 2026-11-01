@@ -77,6 +77,10 @@ button.primary, button.selected { color: var(--vscode-button-foreground, #fff); 
 .markdown-body th, .markdown-body td { border: 1px solid var(--vscode-panel-border, #aaa); padding: 5px 10px; min-width: 50px; }
 .markdown-body th { background: var(--vscode-editorWidget-background, #8882); }
 .markdown-body a { color: var(--vscode-textLink-foreground, #2677b8); }
+.markdown-body kbd { display: inline-block; padding: .05em .35em; border: 1px solid var(--vscode-panel-border, #aab4bf);
+  border-bottom-width: 2px; border-radius: 4px; background: var(--vscode-editorWidget-background, #f1f3f5);
+  color: var(--vscode-foreground, inherit); font: .9em/1.35 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  white-space: nowrap; vertical-align: baseline; }
 .markdown-body mark { color: #20242a; background: #ffe58a; padding: 0 2px; border-radius: 2px; }
 .markdown-body details { margin: 1em 0; padding: .5em .75em; border: 1px solid var(--vscode-panel-border, #aaa); border-radius: 5px; }
 .markdown-body summary { cursor: pointer; font-weight: 600; }
@@ -213,6 +217,7 @@ body.vscode-dark .code-frame, body.vscode-high-contrast .code-frame { --code-key
 .print-chinese { font-family: "Songti SC", SimSun, "Noto Serif CJK SC", "Source Han Serif SC", serif; }
 #printHost .print-content :is(h1, h2, h3, h4, h5, h6, p, li, th, td, blockquote, pre, code, .hljs) { color: #20242a; }
 #printHost .print-content a { color: #155d94; }
+#printHost .print-content kbd { color: #20242a; background: #f1f3f5; border-color: #aab4bf; }
 #printHost .print-content summary { cursor: default; }
 .print-content p { margin-bottom: var(--print-paragraph-gap); text-indent: var(--print-indent); }
 #printHost .print-content .math-block { width: 100%; margin: .8em 0; text-align: center; text-indent: 0; }
