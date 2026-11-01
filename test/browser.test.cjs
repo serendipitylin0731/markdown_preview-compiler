@@ -964,6 +964,100 @@ test('info and warning blocks accept titles after a space', async () => {
   await pdf.close();
 });
 
+test('plain triple-colon blocks fold like HTML details and open in PDF', async () => {
+  const source = '::: 普通标题\n**正文**\n\n```text\n:::info not a nested block\n```\n:::\n\n' +
+    ':::Another title\n第二段。\n:::\n\n:::\n默认标题。\n:::\n';
+  const preview = await browser.newPage();
+  await preview.goto(base + '/?mode=preview');
+  await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(preview, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  assert.deepEqual(await preview.locator('#documentBody details > summary').allTextContents(), ['普通标题', 'Another title', '详情']);
+  assert.equal(await preview.locator('#documentBody details.admonition').count(), 0);
+  await preview.locator('#documentBody details > summary').first().click();
+  await deliver(preview, { type: 'documentChanged', source: source.replace('正文', '更新正文'), version: 2 });
+  assert.deepEqual(await preview.locator('#documentBody details').evaluateAll(nodes => nodes.map(node => node.open)), [true, false, false]);
+  await preview.close();
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(pdf, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.deepEqual(await pdf.locator('#printHost details').evaluateAll(nodes => nodes.map(node => node.open)), [true, true, true]);
+  await pdf.close();
+});
+
+test('inline double dollars and backslash delimiters render and retain their syntax when edited', async () => {
+  const source = String.raw`行内 $$x^2$$、\(y+1\)、\[z+2\] 与 $q$。` + '\n\n' +
+    String.raw`$$p+1$$ 后续文字。` + '\n\n' + String.raw`$$r$$ 和 $$s$$` + '\n\n' + String.raw`\[` + '\n' + String.raw`a^2+b^2=c^2` + '\n' + String.raw`\]` + '\n\n' +
+    String.raw`转义的 \\(literal\\) 不解析；` + '`$$code$$`。\n\n```text\n$$code$$\n```\n\n' +
+    '> ' + String.raw`\[` + '\n> b=c\n> ' + String.raw`\]` + '\n';
+  const preview = await browser.newPage();
+  await preview.goto(base + '/?mode=preview');
+  await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(preview, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  assert.deepEqual(await preview.locator('#documentBody .math-inline').evaluateAll(items => items.map(item => item.dataset.tex)),
+    ['x^2', 'y+1', 'z+2', 'q', 'p+1', 'r', 's']);
+  assert.equal(await preview.locator('#documentBody .math-block').count(), 2);
+  assert.equal((await preview.locator('#documentBody blockquote .math-block').getAttribute('data-tex')).trim(), 'b=c');
+  assert.equal(await preview.locator('#documentBody .katex-error').count(), 0);
+  assert.doesNotMatch(await preview.locator('#documentBody p').first().textContent(), /\$/);
+  await preview.close();
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(pdf, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await pdf.locator('#printHost .math-inline > img.print-diagram').count(), 7);
+  assert.equal(await pdf.locator('#printHost .math-block > img.print-diagram').count(), 2);
+  await pdf.close();
+  const visual = await browser.newPage();
+  const host = await crlfVisualHarness(visual, source);
+  assert.equal(await visual.locator('#documentBody .md-block').filter({ hasText: '后续文字' }).locator('[contenteditable=true]').count(), 1);
+  await visual.locator('#documentBody .math-inline').first().dblclick();
+  await visual.locator('.direct-inline-math').fill('x^3');
+  await visual.locator('#blockType').focus();
+  await host.sync();
+  assert.ok(host.source().includes('$$x^3$$'));
+  assert.ok(host.source().includes(String.raw`\(y+1\)`));
+  await visual.locator('#documentBody .math-inline').nth(1).dblclick();
+  await visual.locator('.direct-inline-math').fill('y+2');
+  await visual.locator('#blockType').focus();
+  await host.sync();
+  assert.ok(host.source().includes(String.raw`\(y+2\)`));
+  await visual.locator('.direct-math').fill('a=b');
+  await host.sync();
+  assert.ok(host.source().includes(String.raw`\[` + '\na=b\n' + String.raw`\]`));
+  await visual.close();
+});
+
+test('ordered and unordered lists can nest inside each other', async () => {
+  const source = '- 无序父项\n  1. 有序子项\n     - 无序孙项\n\n1. 有序父项\n   - 无序子项\n     1. 有序孙项\n';
+  const preview = await browser.newPage();
+  await preview.goto(base + '/?mode=preview');
+  await preview.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(preview, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  assert.equal(await preview.locator('#documentBody ul > li > ol > li > ul > li').count(), 1);
+  assert.equal(await preview.locator('#documentBody ol > li > ul > li > ol > li').count(), 1);
+  await preview.close();
+  const pdf = await browser.newPage();
+  await pdf.goto(base + '/?mode=pdf');
+  await pdf.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(pdf, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await pdf.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await pdf.locator('#printHost ul > li > ol > li > ul > li').count(), 1);
+  assert.equal(await pdf.locator('#printHost ol > li > ul > li > ol > li').count(), 1);
+  await pdf.close();
+  const visual = await browser.newPage();
+  const host = await crlfVisualHarness(visual, source);
+  await visual.locator('#documentBody ul > li > ol > li > ul > li').click();
+  await visual.keyboard.press('End');
+  await visual.keyboard.type('修改');
+  await host.sync();
+  assert.equal(await visual.locator('#documentBody ul > li > ol > li > ul > li').count(), 1);
+  assert.equal(await visual.locator('#documentBody ol > li > ul > li > ol > li').count(), 1);
+  await visual.close();
+});
+
 test('source cursor stays visible in split preview across headings, code, formulas, and HTML', async () => {
   const lines = ['# 起始标题', '', ...Array.from({ length: 36 }, (_, i) => `段落 ${i} 的正文内容。`), '',
     '```txt', ...Array.from({ length: 14 }, (_, i) => `code-line-${String(i).padStart(3, '0')}`), '```', '',
@@ -1570,6 +1664,11 @@ test('PDF preserves the complete sum formula and Mermaid labels from the demo do
   const imageData = `data:image/png;base64,${fs.readFileSync(path.resolve(__dirname, '..', 'assets/logo.png')).toString('base64')}`;
   for (const request of requests) await deliver(page, { type: 'imageResolved', id: request.id, data: imageData });
   await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const diagramPage = await page.evaluate(() => [...document.querySelectorAll('#printHost .print-page')]
+    .indexOf(document.querySelector('#printHost .mermaid-source img.print-diagram')?.closest('.print-page')));
+  assert.ok(diagramPage >= 0);
+  await page.locator('#pdfPages .pdf-page-slot').nth(diagramPage).scrollIntoViewIfNeeded();
+  await page.waitForFunction(index => !!document.querySelectorAll('#pdfPages .pdf-page-slot')[index]?.querySelector('canvas'), diagramPage);
   const syntax = await page.evaluate(() => ({
     tags: document.querySelectorAll('#documentBody .document-tag').length,
     images: document.querySelectorAll('#printHost img:not(.print-diagram)').length,
@@ -1594,8 +1693,9 @@ test('PDF preserves the complete sum formula and Mermaid labels from the demo do
     };
     const math = document.querySelector('#printHost .math-block img.print-diagram');
     const diagram = document.querySelector('#printHost .mermaid-source img.print-diagram');
-    const paper = math?.closest('.print-page');
-    const preview = document.querySelector('#pdfPages canvas');
+    const paper = diagram?.closest('.print-page');
+    const index = [...document.querySelectorAll('#printHost .print-page')].indexOf(paper);
+    const preview = document.querySelectorAll('#pdfPages .pdf-page-slot')[index]?.querySelector('canvas');
     const previewContext = preview?.getContext('2d');
     const paperRect = paper?.getBoundingClientRect();
     const diagramRect = diagram?.getBoundingClientRect();
@@ -2017,7 +2117,9 @@ test('editor scrolling moves through the demo document even when its HTML detail
     exportSettings: {}, templates: [], visiblePosition: { line: 5, character: 0 } });
   const pane = page.locator('.document-scroll');
   const positions = [];
-  for (const line of [5, 39, 68, 84, 99, 110]) {
+  const lines = source.split('\n');
+  const anchors = ['# Markdown Compiler', '## 列表与任务', '## 数学公式', '## 链接、图片与脚注', '## HTML 与折叠块', '## 图表与分页'];
+  for (const line of anchors.map(anchor => lines.findIndex(value => value.startsWith(anchor)))) {
     await deliver(page, { type: 'scrollToLine', line, character: 0 });
     positions.push(await pane.evaluate(element => element.scrollTop));
   }

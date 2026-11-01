@@ -68,11 +68,26 @@ function codeFrameMarkup(content: string, rawInfo = '', editable = false) {
 md.renderer.rules.code_block = (tokens, i) => codeFrameMarkup(tokens[i].content);
 
 md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
-  if (state.src[state.pos] !== '$' || state.src[state.pos + 1] === '$') return false;
-  const end = state.src.indexOf('$', state.pos + 1);
-  if (end < 0 || end === state.pos + 1 || state.src[end - 1] === '\\') return false;
-  if (!silent) { const token = state.push('math_inline', 'span', 0); token.content = state.src.slice(state.pos + 1, end); }
-  state.pos = end + 1; return true;
+  const start = state.pos;
+  const prefix = state.src.slice(start, start + 2);
+  const delimiter = prefix === '$$' ? 'double-dollar' : state.src[start] === '$' ? 'dollar' :
+    prefix === '\\(' ? 'paren' : prefix === '\\[' ? 'bracket' : '';
+  if (!delimiter || (delimiter === 'dollar' && state.src[start - 1] === '$')) return false;
+  const open = delimiter === 'dollar' ? '$' : delimiter === 'double-dollar' ? '$$' : prefix;
+  const close = delimiter === 'paren' ? '\\)' : delimiter === 'bracket' ? '\\]' : open;
+  let end = state.src.indexOf(close, start + open.length);
+  while (end >= 0 && end < state.posMax) {
+    const preceding = state.src.slice(start + open.length, end).match(/\\+$/)?.[0].length || 0;
+    if (preceding % 2 === 0 && !(delimiter === 'dollar' && state.src[end + 1] === '$')) break;
+    end = state.src.indexOf(close, end + close.length);
+  }
+  if (end < 0 || end >= state.posMax || end === start + open.length ||
+      state.src.slice(start + open.length, end).includes('\n')) return false;
+  if (!silent) {
+    const token = state.push('math_inline', 'span', 0);
+    token.content = state.src.slice(start + open.length, end); token.meta = { delimiter };
+  }
+  state.pos = end + close.length; return true;
 });
 md.inline.ruler.before('emphasis', 'mark', (state, silent) => {
   const start = state.pos;
@@ -93,25 +108,30 @@ md.inline.ruler.before('emphasis', 'mark', (state, silent) => {
 });
 md.renderer.rules.mark = (tokens, i, options, env, self) => `<mark>${self.renderInline(tokens[i].children || [], options, env)}</mark>`;
 md.renderer.rules.math_inline = (tokens, i) => {
-  try { return `<span class="math-inline" data-tex="${esc(tokens[i].content)}">${katex.renderToString(tokens[i].content, { throwOnError: false, trust: false, output: 'html' })}</span>`; }
+  try { return `<span class="math-inline" data-tex="${esc(tokens[i].content)}" data-math-delimiter="${esc(tokens[i].meta?.delimiter || 'dollar')}">${katex.renderToString(tokens[i].content, { throwOnError: false, trust: false, output: 'html' })}</span>`; }
   catch { return '<span class="render-error">公式无法渲染</span>'; }
 };
 md.block.ruler.before('fence', 'math_block', (state, start, end, silent) => {
   const line = state.src.slice(state.bMarks[start] + state.tShift[start], state.eMarks[start]);
-  if (!line.startsWith('$$')) return false;
+  const opening = line.startsWith('$$') ? '$$' : line.startsWith('\\[') ? '\\[' : '';
+  if (!opening) return false;
+  const closing = opening === '$$' ? '$$' : '\\]';
   let close = start;
-  const inline = line.slice(2);
-  if (inline.endsWith('$$') && inline.length > 2) close = start;
+  const inline = line.slice(opening.length);
+  const firstClosing = inline.indexOf(closing);
+  if (firstClosing >= 0 && firstClosing !== inline.trimEnd().length - closing.length) return false;
+  if (inline.trimEnd().endsWith(closing) && inline.trimEnd().length > closing.length) close = start;
   else {
     for (let i = start + 1; i < end; i++) {
       const test = state.src.slice(state.bMarks[i] + state.tShift[i], state.eMarks[i]);
-      if (test.trim().endsWith('$$')) { close = i; break; }
+      if (test.trim().endsWith(closing)) { close = i; break; }
     }
     if (close === start) return false;
   }
   if (!silent) {
     const token = state.push('math_block', 'div', 0);
-    token.content = state.getLines(start, close + 1, 0, false).replace(/^\s*\$\$/, '').replace(/\$\$\s*$/, '');
+    token.content = state.getLines(start, close + 1, 0, false).replace(/^\s*(?:\$\$|\\\[)/, '').replace(/\s+$/, '');
+    token.content = token.content.slice(0, -closing.length);
     token.map = [start, close + 1];
   }
   state.line = close + 1; return true;
@@ -120,10 +140,14 @@ md.renderer.rules.math_block = (tokens, i) => {
   try { return `<div class="math-block" data-tex="${esc(tokens[i].content)}">${katex.renderToString(tokens[i].content, { displayMode: true, throwOnError: false, trust: false, output: 'html' })}</div>`; }
   catch { return '<div class="render-error">公式无法渲染</div>'; }
 };
+const admonitionLabels: Record<string, string> = { info: '信息', note: '备注', tip: '提示', warning: '警告', danger: '危险',
+  success: '成功', question: '问题', example: '示例', abstract: '摘要', important: '重要', caution: '注意' };
 md.block.ruler.before('fence', 'admonition', (state, start, end, silent) => {
   const opening = state.src.slice(state.bMarks[start] + state.tShift[start], state.eMarks[start]).trim();
-  const match = opening.match(/^:::([a-z][\w-]*)(?:\[([^\]]*)\]|\s+(.+))?$/i);
-  if (!match) return false;
+  if (!opening.startsWith(':::')) return false;
+  const suffix = opening.slice(3).trim();
+  const match = suffix.match(/^([a-z][\w-]*)(?:\[([^\]]*)\]|\s+(.+))?$/i);
+  const named = match && Object.hasOwn(admonitionLabels, match[1].toLowerCase());
   let depth = 1, close = -1, fence = '';
   for (let line = start + 1; line < end; line++) {
     const value = state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]).trim();
@@ -133,13 +157,14 @@ md.block.ruler.before('fence', 'admonition', (state, start, end, silent) => {
       continue;
     }
     if (marker) { fence = marker[1]; continue; }
-    if (/^:::[a-z][\w-]*(?:\[[^\]]*\]|\s+.+)?$/i.test(value)) depth++;
+    if (/^:::/.test(value) && value.slice(3).trim()) depth++;
     else if (/^:::$/.test(value) && --depth === 0) { close = line; break; }
   }
   if (close < 0) return false;
   if (!silent) {
     const token = state.push('admonition', 'details', 0);
-    token.meta = { kind: match[1].toLowerCase(), title: (match[2] || match[3] || '').trim() };
+    token.meta = named ? { kind: match[1].toLowerCase(), title: (match[2] || match[3] || '').trim() } :
+      { kind: 'plain', title: suffix || '详情' };
     token.content = state.getLines(start + 1, close, state.blkIndent, false);
     token.map = [start, close + 1];
   }
@@ -148,11 +173,10 @@ md.block.ruler.before('fence', 'admonition', (state, start, end, silent) => {
 });
 md.renderer.rules.admonition = (tokens, i) => {
   const { kind, title } = tokens[i].meta;
-  const labels: Record<string, string> = { info: '信息', note: '备注', tip: '提示', warning: '警告', danger: '危险',
-    success: '成功', question: '问题', example: '示例', abstract: '摘要', important: '重要', caution: '注意' };
   const icon = kind === 'info' ? '<svg class="admonition-icon" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><path d="M10 9v5M10 5.7v.8" stroke-linecap="round"/></svg>' :
     kind === 'warning' ? '<svg class="admonition-icon" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 2.7a1.2 1.2 0 0 1 2 0l7.2 12.4a1.3 1.3 0 0 1-1.1 1.9H2.9a1.3 1.3 0 0 1-1.1-1.9L9 2.7Z"/><path d="M10 7v4.5M10 14v.3" stroke-linecap="round"/></svg>' : '';
-  return `<details class="admonition admonition-${kind}"><summary>${icon}${esc(title || labels[kind] || kind)}</summary>${md.render(tokens[i].content)}</details>`;
+  const className = kind === 'plain' ? '' : ` class="admonition admonition-${kind}"`;
+  return `<details${className}><summary>${icon}${esc(title || admonitionLabels[kind] || kind)}</summary>${md.render(tokens[i].content)}</details>`;
 };
 md.renderer.rules.fence = (tokens, i, options, env, self) => {
   if (tokens[i].info.trim().toLowerCase() === 'mermaid') {
@@ -174,7 +198,12 @@ turndown.addRule('mark', {
 turndown.addRule('math', {
   filter: node => node.nodeType === 1 && (node.classList?.contains('math-inline') || node.classList?.contains('katex')),
   replacement: (_content, node) => {
-    if (node.classList?.contains('math-inline')) return `$${node.getAttribute('data-tex') || ''}$`;
+    if (node.classList?.contains('math-inline')) {
+      const delimiters: Record<string, [string, string]> = { dollar: ['$', '$'], 'double-dollar': ['$$', '$$'],
+        paren: ['\\(', '\\)'], bracket: ['\\[', '\\]'] };
+      const [open, close] = delimiters[node.getAttribute('data-math-delimiter') || ''] || delimiters.dollar;
+      return open + (node.getAttribute('data-tex') || '') + close;
+    }
     const annotation = node.querySelector('annotation[encoding="application/x-tex"]');
     return annotation ? `$${annotation.textContent}$` : node.textContent || '';
   }
@@ -402,9 +431,9 @@ function parseBlocks(input: string, metadata = parseFrontMatter(input)): Block[]
     const start = offsets[line] ?? input.length;
     const end = offsets[endLine] ?? input.length;
     const raw = input.slice(start, end);
-    let protectedBlock = /^\s*(?:`{3,}|~{3,}|\$\$|<!--|<[^!]|\[[^\]]+\]:|:::[a-z])/i.test(raw) || /<[^>]+>/.test(raw);
+    let protectedBlock = /^\s*(?:`{3,}|~{3,}|<!--|<[^!]|\[[^\]]+\]:|:::)/i.test(raw) || /<[^>]+>/.test(raw);
     const kind = /^\s*(`{3,}|~{3,})/.test(raw) && !/^\s*(`{3,}|~{3,})\s*mermaid\b/i.test(raw) ? 'code' :
-      /^\s*\$\$/.test(raw) ? 'math' : /^\s*:::[a-z][\w-]*(?:\[[^\]]*\]|\s+.+)?\s*$/im.test(raw.split('\n')[0]) ? 'admonition' : '';
+      tokens[index].type === 'math_block' ? 'math' : tokens[index].type === 'admonition' ? 'admonition' : '';
     if (kind === 'code' || kind === 'math') protectedBlock = false;
     const next = merged[i + 1]?.index ?? tokens.length;
     let html = md.renderer.render(tokens.slice(index, next), md.options, env);
@@ -549,7 +578,7 @@ function blockMarkup(block: Block, index: number, editable: boolean) {
     return `<section class="md-block direct-editor" data-index="${index}" data-line="${block.line}"><div class="block-content markdown-body">${codeFrameMarkup(fence?.content || '', fence?.info || '', true)}</div></section>`;
   }
   if (editable && block.kind === 'math') {
-    const value = block.raw.replace(/^\s*\$\$\s*/, '').replace(/\s*\$\$\s*$/, '');
+    const value = block.raw.replace(/^\s*(?:\$\$|\\\[)\s*/, '').replace(/\s*(?:\$\$|\\\])\s*$/, '');
     return `<section class="md-block direct-editor" data-index="${index}" data-line="${block.line}"><div class="block-content markdown-body">${block.html}<textarea class="direct-math" data-direct="math" spellcheck="false" aria-label="直接编辑公式">${esc(value)}</textarea></div></section>`;
   }
   return `<section class="md-block ${block.editable ? '' : 'protected'}" data-index="${index}" data-line="${block.line}">
@@ -758,7 +787,7 @@ function imageIndexAtCursor(block: Block, offset: number) {
 }
 function inlineMathIndexAtCursor(block: Block, offset: number) {
   const relative = offset - block.start;
-  return [...block.raw.matchAll(/(?<!\\)\$[^$\n]+\$/g)]
+  return [...block.raw.matchAll(/(?<!\\)(?:\$\$[^$\n]+\$\$|\$[^$\n]+\$|\\\([^\n]*?\\\)|\\\[[^\n]*?\\\])/g)]
     .findIndex(match => relative >= (match.index || 0) && relative <= (match.index || 0) + match[0].length);
 }
 function plainSourceText(raw: string) {
@@ -821,7 +850,7 @@ function scrollPreviewCursor(force = false, visibleStartLine?: number, visibleEn
   if (!content) return;
   const imageIndex = found && !inMetadata ? imageIndexAtCursor(found.block, found.offset) : -1;
   const mathIndex = found && !inMetadata ? inlineMathIndexAtCursor(found.block, found.offset) : -1;
-  const special = found && !inMetadata && (/^\s*\$\$/.test(found.block.raw) ? content.querySelector<HTMLElement>('.math-block') :
+  const special = found && !inMetadata && (found.block.kind === 'math' ? content.querySelector<HTMLElement>('.math-block') :
     imageIndex >= 0 ? content.querySelectorAll<HTMLElement>('img')[imageIndex] :
     mathIndex >= 0 ? content.querySelectorAll<HTMLElement>('.math-inline')[mathIndex] : null);
   const code = found?.block.kind === 'code' ? content.querySelector<HTMLElement>('pre code') : null;
@@ -1206,7 +1235,8 @@ function serializeBlock(element: HTMLElement, original: Block) {
   }
   if (original.kind === 'math') {
     const body = ((element.querySelector('[data-direct="math"]') as HTMLTextAreaElement)?.value || '').replace(/\r?\n/g, eol);
-    return finish(`$$${eol}${body}${eol}$$`);
+    const brackets = /^\s*\\\[/.test(original.raw);
+    return finish(`${brackets ? '\\[' : '$$'}${eol}${body}${eol}${brackets ? '\\]' : '$$'}`);
   }
   const copy = element.querySelector<HTMLElement>('.block-content')!.cloneNode(true) as HTMLElement;
   copy.querySelectorAll<HTMLImageElement>('img[data-original-src]').forEach(img => {
