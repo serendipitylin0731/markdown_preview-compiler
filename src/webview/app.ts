@@ -16,6 +16,7 @@ import 'mathjax-full/js/input/tex/configmacros/ConfigMacrosConfiguration.js';
 import 'mathjax-full/js/input/tex/cancel/CancelConfiguration.js';
 import 'mathjax-full/js/input/tex/braket/BraketConfiguration.js';
 import 'mathjax-full/js/input/tex/physics/PhysicsConfiguration.js';
+import 'mathjax-full/js/input/tex/newcommand/NewcommandConfiguration.js';
 import { SVG } from 'mathjax-full/js/output/svg.js';
 import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
 import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
@@ -34,11 +35,12 @@ mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base',
     lineColor: '#63758b', fontFamily: 'Arial, sans-serif' } });
 const mathAdaptor = liteAdaptor();
 RegisterHTMLHandler(mathAdaptor);
-const printMathDocument = mathjax.document('', { InputJax: new TeX({
-  packages: ['base', 'ams', 'boldsymbol', 'mathtools', 'cases', 'configmacros', 'cancel', 'braket', 'physics'],
+function createPrintMathDocument() { return mathjax.document('', { InputJax: new TeX({
+  packages: ['base', 'ams', 'boldsymbol', 'mathtools', 'cases', 'configmacros', 'cancel', 'braket', 'physics', 'newcommand'],
   macros: { bm: ['\\boldsymbol{#1}', 1] }
 }),
-  OutputJax: new SVG({ fontCache: 'local' }) });
+  OutputJax: new SVG({ fontCache: 'local' }) }); }
+const printMathDocument = createPrintMathDocument();
 
 const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
   .use(anchor, { permalink: false }).use(footnote).use(taskLists, { enabled: false, label: false });
@@ -107,8 +109,22 @@ md.inline.ruler.before('emphasis', 'mark', (state, silent) => {
   return true;
 });
 md.renderer.rules.mark = (tokens, i, options, env, self) => `<mark>${self.renderInline(tokens[i].children || [], options, env)}</mark>`;
-md.renderer.rules.math_inline = (tokens, i) => {
-  try { return `<span class="math-inline" data-tex="${esc(tokens[i].content)}" data-math-delimiter="${esc(tokens[i].meta?.delimiter || 'dollar')}">${katex.renderToString(tokens[i].content, { throwOnError: false, trust: false, output: 'html' })}</span>`; }
+function renderMathToken(token: any, env: any, display: boolean) {
+  env.mathMacros ||= {};
+  const index = env.mathSnapshots?.length;
+  if (index !== undefined) {
+    env.mathSnapshots.push({ ...env.mathMacros });
+    try {
+      const html = mathAdaptor.outerHTML(env.mathPrintDocument.convert(token.content, { display }));
+      env.mathPrintSvg.push(html.includes('data-mjx-error') ? '' : html);
+    } catch { env.mathPrintSvg.push(''); }
+  }
+  const rendered = katex.renderToString(token.content, { displayMode: display, throwOnError: false, trust: false,
+    output: 'html', macros: env.mathMacros, globalGroup: true });
+  return { rendered, index: index === undefined ? '' : ` data-math-index="${index}"` };
+}
+md.renderer.rules.math_inline = (tokens, i, _options, env) => {
+  try { const math = renderMathToken(tokens[i], env, false); return `<span class="math-inline" data-tex="${esc(tokens[i].content)}" data-math-delimiter="${esc(tokens[i].meta?.delimiter || 'dollar')}"${math.index}>${math.rendered}</span>`; }
   catch { return '<span class="render-error">公式无法渲染</span>'; }
 };
 md.block.ruler.before('fence', 'math_block', (state, start, end, silent) => {
@@ -135,9 +151,9 @@ md.block.ruler.before('fence', 'math_block', (state, start, end, silent) => {
     token.map = [start, close + 1];
   }
   state.line = close + 1; return true;
-});
-md.renderer.rules.math_block = (tokens, i) => {
-  try { return `<div class="math-block" data-tex="${esc(tokens[i].content)}">${katex.renderToString(tokens[i].content, { displayMode: true, throwOnError: false, trust: false, output: 'html' })}</div>`; }
+}, { alt: ['paragraph', 'reference', 'blockquote', 'list'] });
+md.renderer.rules.math_block = (tokens, i, _options, env) => {
+  try { const math = renderMathToken(tokens[i], env, true); return `<div class="math-block" data-tex="${esc(tokens[i].content)}"${math.index}>${math.rendered}</div>`; }
   catch { return '<div class="render-error">公式无法渲染</div>'; }
 };
 const admonitionLabels: Record<string, string> = { info: '信息', note: '备注', tip: '提示', warning: '警告', danger: '危险',
@@ -171,12 +187,12 @@ md.block.ruler.before('fence', 'admonition', (state, start, end, silent) => {
   state.line = close + 1;
   return true;
 });
-md.renderer.rules.admonition = (tokens, i) => {
+md.renderer.rules.admonition = (tokens, i, _options, env) => {
   const { kind, title } = tokens[i].meta;
   const icon = kind === 'info' ? '<svg class="admonition-icon" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><path d="M10 9v5M10 5.7v.8" stroke-linecap="round"/></svg>' :
     kind === 'warning' ? '<svg class="admonition-icon" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 2.7a1.2 1.2 0 0 1 2 0l7.2 12.4a1.3 1.3 0 0 1-1.1 1.9H2.9a1.3 1.3 0 0 1-1.1-1.9L9 2.7Z"/><path d="M10 7v4.5M10 14v.3" stroke-linecap="round"/></svg>' : '';
   const className = kind === 'plain' ? '' : ` class="admonition admonition-${kind}"`;
-  return `<details${className}><summary>${icon}${esc(title || admonitionLabels[kind] || kind)}</summary>${md.render(tokens[i].content)}</details>`;
+  return `<details${className}><summary>${icon}${esc(title || admonitionLabels[kind] || kind)}</summary>${md.render(tokens[i].content, env)}</details>`;
 };
 md.renderer.rules.fence = (tokens, i, options, env, self) => {
   if (tokens[i].info.trim().toLowerCase() === 'mermaid') {
@@ -209,7 +225,8 @@ turndown.addRule('math', {
   }
 });
 
-type Block = { start: number; end: number; raw: string; html: string; editable: boolean; line: number };
+type Block = { start: number; end: number; raw: string; html: string; editable: boolean; line: number;
+  mathSnapshots?: any[]; mathPrintSvg?: string[] };
 type FrontMatter = { raw: string; bodyOffset: number; bodyLine: number; tags: string[] };
 let source = '';
 let version = 0;
@@ -397,10 +414,37 @@ function htmlContainerBalance(content: string, stack: string[]) {
     } else if (!match[0].endsWith('/>')) stack.push(tag);
   }
 }
+function keepClosingPunctuation(html: string) {
+  if (!/[ \t\r\n][，。、；：？！）》】〉〕〗〙〛」』”’…﹐﹑﹒﹔﹕﹖﹗,.!?;:%)\]}]|…/u.test(html)) return html;
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+  for (const node of nodes) {
+    if (node.parentElement?.closest('pre, code, textarea, script, style, svg, .katex, .math-inline, .math-block')) continue;
+    const pattern = /(\S)(?:[ \t\r\n]+[，。、；：？！）》】〉〕〗〙〛」』”’…﹐﹑﹒﹔﹕﹖﹗,.!?;:%)\]}]+|…+)/gu;
+    const matches = [...node.data.matchAll(pattern)];
+    if (!matches.length) continue;
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    for (const match of matches) {
+      const index = match.index || 0;
+      fragment.append(document.createTextNode(node.data.slice(offset, index)));
+      const group = document.createElement('span'); group.className = 'kinsoku-group'; group.textContent = match[0];
+      fragment.append(group); offset = index + match[0].length;
+    }
+    fragment.append(document.createTextNode(node.data.slice(offset)));
+    node.replaceWith(fragment);
+  }
+  return template.innerHTML;
+}
 function parseBlocks(input: string, metadata = parseFrontMatter(input)): Block[] {
   const offsets = sourceOffsets(input);
-  const env = {};
   const body = input.slice(metadata.bodyOffset);
+  const hasDefinitions = /\\(?:g?def|newcommand|renewcommand|providecommand|DeclareMathOperator)\b/.test(body);
+  const env: any = { mathMacros: {}, ...(hasDefinitions ? { mathSnapshots: [], mathPrintSvg: [],
+    mathPrintDocument: createPrintMathDocument() } : {}) };
   const tokens = md.parse(body, env);
   const spans: Array<{ start: number; end: number; index: number }> = [];
   for (let index = 0; index < tokens.length; index++) {
@@ -442,7 +486,8 @@ function parseBlocks(input: string, metadata = parseFrontMatter(input)): Block[]
       html = '<div class="render-warning">该扩展指令暂不支持可视化渲染，请使用源码编辑。</div>' + html;
     }
     if (html.includes('class="footnotes"')) protectedBlock = true;
-    result.push({ start, end, raw, html: DOMPurify.sanitize(html), editable: !protectedBlock, line, kind });
+    result.push({ start, end, raw, html: keepClosingPunctuation(DOMPurify.sanitize(html)), editable: !protectedBlock, line, kind,
+      mathSnapshots: env.mathSnapshots, mathPrintSvg: env.mathPrintSvg });
   }
   if (!result.length && body.trim()) result.push({ start: metadata.bodyOffset, end: input.length, raw: body,
     html: DOMPurify.sanitize(md.render(body)), editable: false, line: metadata.bodyLine });
@@ -973,7 +1018,7 @@ function onInput(event: Event) {
     }
     if (target.matches('[data-direct="math"]')) {
       const preview = block.querySelector<HTMLElement>('.math-block');
-      if (preview) preview.innerHTML = katex.renderToString((target as HTMLTextAreaElement).value, { displayMode: true, throwOnError: false, trust: false, output: 'html' });
+      if (preview) preview.innerHTML = katex.renderToString((target as HTMLTextAreaElement).value, { displayMode: true, throwOnError: false, trust: false, output: 'html', macros: macrosForMathElement(preview), globalGroup: true });
     }
     const code = target.closest<HTMLElement>('[data-direct="code"]');
     if (code) refreshEditableCode(code);
@@ -1056,11 +1101,17 @@ function onDoubleClick(event: MouseEvent) {
     math.replaceChildren(input); input.focus(); input.select();
     input.addEventListener('blur', () => {
       math.dataset.tex = input.value;
-      math.innerHTML = DOMPurify.sanitize(katex.renderToString(input.value, { throwOnError: false, trust: false, output: 'html' }));
+      math.innerHTML = DOMPurify.sanitize(katex.renderToString(input.value, { throwOnError: false, trust: false, output: 'html', macros: macrosForMathElement(math), globalGroup: true }));
       const block = math.closest('.md-block') as HTMLElement | null;
       if (block) scheduleBlockSave(block);
     }, { once: true });
   }
+}
+function macrosForMathElement(element: HTMLElement) {
+  const index = element.dataset.mathIndex;
+  const section = element.closest<HTMLElement>('.md-block');
+  const block = section && blocks[Number(section.dataset.index)];
+  return index === undefined ? {} : { ...block?.mathSnapshots?.[Number(index)] };
 }
 function editLink(link: HTMLAnchorElement) {
   showDialog('编辑链接', '<label>文字<input id="linkText"></label><label>地址<input id="linkUrl"></label><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="removeLink">删除链接</button><button data-action="updateLink" class="primary">保存</button></div>', { link });
@@ -1278,7 +1329,7 @@ function saveBlock(element: HTMLElement) {
   const original = blocks[index];
   if (!original || !original.editable) return;
   const content = element.querySelector<HTMLElement>('.block-content');
-  if (content && !content.textContent?.trim() && !content.querySelector('img, table, input, code, pre, svg, iframe')) {
+  if (content && !content.textContent?.trim() && !content.querySelector('img, table, input, textarea, code, pre, svg, iframe')) {
     removeBlock(element);
     return;
   }
@@ -1393,7 +1444,9 @@ function applySource(newSource: string, newVersion: number, own = false, followC
     const current = pendingEdit.element;
     const index = pendingEdit.index;
     const fresh = nextBlocks[index];
-    if (nextBlocks.length === blocks.length && fresh?.start === blocks[index]?.start) {
+    const changesDefinitions = /\\(?:g?def|newcommand|renewcommand|providecommand|DeclareMathOperator)\b/
+      .test((fresh?.raw || '') + (blocks[index]?.raw || ''));
+    if (nextBlocks.length === blocks.length && fresh?.start === blocks[index]?.start && !changesDefinitions) {
       blocks = nextBlocks;
       document.querySelectorAll<HTMLElement>('#documentBody .md-block').forEach((element, i) => {
         if (blocks[i]) element.dataset.line = String(blocks[i].line);
@@ -1404,6 +1457,10 @@ function applySource(newSource: string, newVersion: number, own = false, followC
     }
     const explicitCaret = pendingEdit.focusIndex !== undefined;
     const focusIndex = pendingEdit.focusIndex;
+    const focusedMath = document.activeElement instanceof HTMLTextAreaElement &&
+      current.contains(document.activeElement) && document.activeElement.matches('[data-direct="math"]') ?
+      { start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd,
+        scrollTop: document.activeElement.scrollTop } : null;
     const caret = explicitCaret ? { childIndex: 0, textOffset: pendingEdit.focusTextOffset } : captureBlockCaret(current);
     window.clearTimeout(editTimer); editTimer = undefined;
     if (scheduledBlock === current) scheduledBlock = null;
@@ -1412,7 +1469,11 @@ function applySource(newSource: string, newVersion: number, own = false, followC
     const caretBlock = explicitCaret ? focusIndex :
       addedBlocks > 0 ? index + Math.min(caret?.childIndex || 0, addedBlocks) : index;
     renderDocument();
-    restoreBlockCaret(caret, Math.min(caretBlock, blocks.length - 1));
+    const restoredMath = focusedMath && document.querySelectorAll<HTMLElement>('#documentBody .md-block')[index]
+      ?.querySelector<HTMLTextAreaElement>('[data-direct="math"]');
+    if (restoredMath && focusedMath) {
+      restoredMath.focus(); restoredMath.setSelectionRange(focusedMath.start, focusedMath.end); restoredMath.scrollTop = focusedMath.scrollTop;
+    } else restoreBlockCaret(caret, Math.min(caretBlock, blocks.length - 1));
     if (mode === 'pdf' || mode === 'preview') schedulePdf();
     return;
   }
@@ -1426,7 +1487,7 @@ function captureBlockCaret(block: HTMLElement) {
   if (!content || !selection?.rangeCount || !content.contains(selection.anchorNode)) return null;
   const range = selection.getRangeAt(0);
   let child: Node | null = range.startContainer;
-  while (child?.parentNode !== content) child = child?.parentNode || null;
+  while (child && child.parentNode !== content) child = child.parentNode;
   if (!child) return null;
   const offset = document.createRange();
   offset.selectNodeContents(child);
@@ -2145,8 +2206,8 @@ function makePrintBlock(block: Block): HTMLElement {
     const display = element.classList.contains('math-block');
     const tex = element.dataset.tex || (display ? block.raw.replace(/^\s*\$\$\s*/, '').replace(/\s*\$\$\s*$/, '') : '');
     try {
-      const result = printMathDocument.convert(tex, { display });
-      const mathHtml = mathAdaptor.outerHTML(result);
+      const cached = element.dataset.mathIndex === undefined ? '' : block.mathPrintSvg?.[Number(element.dataset.mathIndex)];
+      const mathHtml = cached || mathAdaptor.outerHTML(printMathDocument.convert(tex, { display }));
       if (mathHtml.includes('data-mjx-error')) continue;
       const svg = mathHtml.match(/<svg\b[\s\S]*<\/svg>/)?.[0];
       if (svg) {
@@ -2693,7 +2754,7 @@ const printStyleProperties = [
   'background-color','background-image','background-position','background-size','background-repeat','box-shadow',
   'color','font-family','font-size','font-weight','font-style','font-variant','line-height','letter-spacing','word-spacing',
   'text-align','text-decoration-line','text-decoration-color','text-decoration-style','text-transform','text-indent',
-  'text-shadow','white-space','overflow-wrap','word-break','vertical-align','object-fit',
+  'text-shadow','white-space','overflow-wrap','word-break','line-break','vertical-align','object-fit',
   'border-collapse','border-spacing','table-layout','list-style-type','direction'
 ];
 function freezePrintStyles(page: HTMLElement) {

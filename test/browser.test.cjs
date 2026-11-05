@@ -1041,6 +1041,127 @@ test('plain triple-colon blocks fold like HTML details and open in PDF', async (
   await pdf.close();
 });
 
+test('indented display formulas interrupt list paragraphs without blank lines', async () => {
+  const source = '2. 计算\n   $$\n   ' + String.raw`\mathbb{E}\left[2^{2X_m}\right]\,,` + '\n   $$\n' +
+    '   并证明\n   $$\n   ' + String.raw`\operatorname{Var}\left[\widehat m\right]=\frac{m^2-m}{2}\le\frac{m^2}{2}.` + '\n   $$';
+  for (const mode of ['preview', 'visual', 'pdf']) {
+    const page = await browser.newPage();
+    await page.goto(base + '/?mode=' + mode);
+    await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+    await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+    assert.equal(await page.locator('#documentBody ol > li .math-block').count(), 2, mode);
+    assert.equal(await page.locator('#documentBody .katex-error').count(), 0, mode);
+    if (mode === 'pdf') {
+      await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+      assert.equal(await page.locator('#printHost ol > li .math-block > img.print-diagram').count(), 2);
+    }
+    await page.close();
+  }
+});
+
+test('Chinese punctuation stays off wrapped line starts in all preview modes', async () => {
+  const source = '中文排版：这是一段**强调**，标点。包含“引号”、（括号）；还有——破折号！连续省略……然后继续。前置空格 ，继续 。结束 ”然后阅读。';
+  for (const mode of ['preview', 'visual', 'pdf']) {
+    const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
+    await page.goto(base + '/?mode=' + mode);
+    await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+    await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+    if (mode === 'pdf') await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+    const failures = await page.evaluate(mode => {
+      const paragraph = document.querySelector(mode === 'pdf' ? '#printHost .print-content p' : '#documentBody p');
+      const forbidden = '，。、！？；：）》】」』”’…';
+      const errors = [], allowed = new Set();
+      for (let width = 60; width <= 180; width += 3) {
+        paragraph.style.width = width + 'px';
+        const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+        const chars = [];
+        while (walker.nextNode()) {
+          const node = walker.currentNode;
+          for (let index = 0; index < node.length; index++) {
+            const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + 1);
+            const rect = range.getBoundingClientRect();
+            if (rect.width) chars.push({ char: node.data[index], top: rect.top });
+          }
+        }
+        for (let i = 1; i < chars.length; i++) {
+          if (chars[i].top <= chars[i - 1].top + 3) continue;
+          if (forbidden.includes(chars[i].char)) errors.push([width, chars[i].char]);
+          if ('“—'.includes(chars[i].char)) allowed.add(chars[i].char);
+        }
+      }
+      return { errors, allowed: [...allowed] };
+    }, mode);
+    assert.deepEqual(failures.errors, [], mode);
+    assert.ok(failures.allowed.includes('“') && failures.allowed.includes('—'), `${mode}: ${JSON.stringify(failures)}`);
+    await page.close();
+  }
+  const visual = await browser.newPage();
+  const host = await crlfVisualHarness(visual, '前置空格 ，继续。\n');
+  await visual.locator('#documentBody p').click();
+  await visual.keyboard.press('End');
+  await visual.keyboard.type('新');
+  await host.sync();
+  assert.equal(host.source(), '前置空格 ，继续。新\n');
+  await visual.close();
+});
+
+test('document LaTeX macros work across formulas and remain isolated per document', async () => {
+  const definition = String.raw`\newcommand{\RR}{\mathbb{R}} \newcommand{\vect}[1]{\mathbf{#1}}`;
+  const source = '$$\n' + definition + '\n$$\n\n' +
+    String.raw`向量 $\vect{v} \in \RR$。` + '\n\n:::info 公式\n\n' +
+    String.raw`\[\vect{x}+\vect{y}\in\RR\]` + '\n\n:::\n';
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await page.locator('#documentBody .katex-error').count(), 0);
+  assert.equal(await page.locator('#documentBody .math-inline .mathbf').count(), 1);
+  assert.equal(await page.locator('#printHost .math-inline > img.print-diagram').count(), 1);
+  assert.equal(await page.locator('#printHost details .math-block > img.print-diagram').count(), 1);
+  const beforeImage = await page.locator('#printHost .math-inline > img.print-diagram').getAttribute('src');
+  const changed = source.replace(String.raw`\mathbf{#1}`, String.raw`\mathsf{#1}`);
+  await deliver(page, { type: 'documentChanged', source: changed, version: 2 });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await page.locator('#documentBody .katex-error').count(), 0);
+  assert.equal(await page.locator('#documentBody .math-inline .mathsf').count(), 1);
+  assert.equal(await page.locator('#printHost .math-inline > img.print-diagram').count(), 1);
+  assert.notEqual(await page.locator('#printHost .math-inline > img.print-diagram').getAttribute('src'), beforeImage);
+  await deliver(page, { type: 'document', source: String.raw`未定义 $\RR$。`, version: 3, settings: {}, exportSettings: {}, templates: [] });
+  assert.match(await page.locator('#documentBody .math-inline').textContent(), /\\RR/);
+  await page.close();
+
+  const visual = await browser.newPage();
+  const host = await crlfVisualHarness(visual, source);
+  await visual.locator('.direct-math').first().fill(definition.replace(String.raw`\mathbf{#1}`, String.raw`\mathsf{#1}`));
+  await host.sync();
+  assert.equal(await visual.locator('#documentBody .math-inline .mathsf').count(), 1);
+  assert.ok(host.source().includes(String.raw`\newcommand{\RR}`));
+  assert.equal(await visual.locator('.direct-math').first().evaluate(node => document.activeElement === node), true);
+  await visual.locator('#documentBody .math-inline').first().dblclick();
+  await visual.locator('.direct-inline-math').fill(String.raw`\vect{w}\in\RR`);
+  await visual.locator('#blockType').focus();
+  await host.sync();
+  assert.equal(await visual.locator('#documentBody .math-inline .mathsf').count(), 1);
+  assert.ok(host.source().includes(String.raw`\vect{w}\in\RR`));
+  await visual.close();
+});
+
+test('definitions and redefinitions apply only to subsequent equations', async () => {
+  const source = '$$\n' + String.raw`\def\sq#1{#1^2} \newcommand{\vv}[1]{\mathbf{#1}}` + '\n$$\n\n' +
+    String.raw`首式 $\vv{x}=\sq{x}$。` + '\n\n$$\n' + String.raw`\renewcommand{\vv}[1]{\mathsf{#1}}` + '\n$$\n\n' +
+    String.raw`后式 $\vv{y}=\sq{y}$。`;
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await page.locator('#documentBody .math-inline').first().locator('.mathbf').count(), 1);
+  assert.equal(await page.locator('#documentBody .math-inline').last().locator('.mathsf').count(), 1);
+  assert.equal(await page.locator('#printHost .math-inline > img.print-diagram').count(), 2);
+  await page.close();
+});
+
 test('inline double dollars and backslash delimiters render and retain their syntax when edited', async () => {
   const source = String.raw`行内 $$x^2$$、\(y+1\)、\[z+2\] 与 $q$。` + '\n\n' +
     String.raw`$$p+1$$ 后续文字。` + '\n\n' + String.raw`$$r$$ 和 $$s$$` + '\n\n' + String.raw`\[` + '\n' + String.raw`a^2+b^2=c^2` + '\n' + String.raw`\]` + '\n\n' +

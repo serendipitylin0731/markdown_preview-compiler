@@ -61,6 +61,19 @@ $$
 \sum_{i=1}^{n} i = \frac{n(n+1)}{2}
 $$
 
+在公式中定义的宏可在本文档的后续公式中使用：
+
+$$
+\newcommand{\RR}{\mathbb{R}}
+\newcommand{\vect}[1]{\boldsymbol{#1}}
+$$
+
+例如 $\vect{v}\in\RR^2$，也可以在独立公式中使用：
+
+\[
+\vect{x}+\vect{y}\in\RR^2
+\]
+
 反斜杠方括号独立公式，以及粗体符号与分段大括号：
 
 \[
@@ -80,6 +93,17 @@ $$
 (stop[v],w+r[v]),&\text{否则}.
 \end{cases}
 $$
+
+列表中的多行公式可以紧跟文字，不需要额外空行：
+
+2. 计算
+   $$
+   \mathbb{E}\left[2^{2X_m}\right]\,,
+   $$
+   并证明
+   $$
+   \operatorname{Var}\left[\widehat m\right]=\frac{m^2-m}{2}\le\frac{m^2}{2}.
+   $$
 
 ## 代码与行号
 
