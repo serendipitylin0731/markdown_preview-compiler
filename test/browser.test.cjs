@@ -1054,6 +1054,9 @@ test('multiline inline formulas in list items render in every preview', async ()
     await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
     assert.equal(await page.locator('#documentBody ol > li .math-inline .katex').count(), 1, mode);
     assert.equal(await page.locator('#documentBody .katex-error').count(), 0, mode);
+    const rendered = await page.locator('#documentBody ol > li .math-inline .katex').textContent();
+    assert.doesNotMatch(rendered, /\\mbox/, mode);
+    assert.equal((rendered.match(/若/g) || []).length, 2, mode);
     if (mode === 'pdf') {
       await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
       assert.equal(await page.locator('#printHost ol > li .math-inline > img.print-diagram').count(), 1);

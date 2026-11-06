@@ -41,6 +41,8 @@ function createPrintMathDocument() { return mathjax.document('', { InputJax: new
 }),
   OutputJax: new SVG({ fontCache: 'local' }) }); }
 const printMathDocument = createPrintMathDocument();
+// KaTeX has no built-in \mbox, while MathJax and common LaTeX documents do.
+const defaultMathMacros = { '\\mbox': '\\text' };
 
 const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
   .use(anchor, { permalink: false }).use(footnote).use(taskLists, { enabled: false, label: false });
@@ -109,7 +111,7 @@ md.inline.ruler.before('emphasis', 'mark', (state, silent) => {
 });
 md.renderer.rules.mark = (tokens, i, options, env, self) => `<mark>${self.renderInline(tokens[i].children || [], options, env)}</mark>`;
 function renderMathToken(token: any, env: any, display: boolean) {
-  env.mathMacros ||= {};
+  env.mathMacros ||= { ...defaultMathMacros };
   const index = env.mathSnapshots?.length;
   if (index !== undefined) {
     env.mathSnapshots.push({ ...env.mathMacros });
@@ -442,7 +444,7 @@ function parseBlocks(input: string, metadata = parseFrontMatter(input)): Block[]
   const offsets = sourceOffsets(input);
   const body = input.slice(metadata.bodyOffset);
   const hasDefinitions = /\\(?:g?def|newcommand|renewcommand|providecommand|DeclareMathOperator)\b/.test(body);
-  const env: any = { mathMacros: {}, ...(hasDefinitions ? { mathSnapshots: [], mathPrintSvg: [],
+  const env: any = { mathMacros: { ...defaultMathMacros }, ...(hasDefinitions ? { mathSnapshots: [], mathPrintSvg: [],
     mathPrintDocument: createPrintMathDocument() } : {}) };
   const tokens = md.parse(body, env);
   const spans: Array<{ start: number; end: number; index: number }> = [];
@@ -1110,7 +1112,7 @@ function macrosForMathElement(element: HTMLElement) {
   const index = element.dataset.mathIndex;
   const section = element.closest<HTMLElement>('.md-block');
   const block = section && blocks[Number(section.dataset.index)];
-  return index === undefined ? {} : { ...block?.mathSnapshots?.[Number(index)] };
+  return { ...defaultMathMacros, ...(index === undefined ? {} : block?.mathSnapshots?.[Number(index)]) };
 }
 function editLink(link: HTMLAnchorElement) {
   showDialog('编辑链接', '<label>文字<input id="linkText"></label><label>地址<input id="linkUrl"></label><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="removeLink">删除链接</button><button data-action="updateLink" class="primary">保存</button></div>', { link });
@@ -1539,7 +1541,7 @@ function insertInline(markdown: string) {
       const fragment = document.createElement('span');
       fragment.className = 'math-inline';
       fragment.dataset.tex = content;
-      fragment.innerHTML = DOMPurify.sanitize(katex.renderToString(content, { throwOnError: false, trust: false, output: 'html' }));
+      fragment.innerHTML = DOMPurify.sanitize(katex.renderToString(content, { throwOnError: false, trust: false, output: 'html', macros: { ...defaultMathMacros } }));
       node = fragment;
     }
     range.deleteContents(); range.insertNode(node);
