@@ -83,8 +83,7 @@ md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
     if (preceding % 2 === 0 && !(delimiter === 'dollar' && state.src[end + 1] === '$')) break;
     end = state.src.indexOf(close, end + close.length);
   }
-  if (end < 0 || end >= state.posMax || end === start + open.length ||
-      state.src.slice(start + open.length, end).includes('\n')) return false;
+  if (end < 0 || end >= state.posMax || end === start + open.length) return false;
   if (!silent) {
     const token = state.push('math_inline', 'span', 0);
     token.content = state.src.slice(start + open.length, end); token.meta = { delimiter };

@@ -1041,6 +1041,27 @@ test('plain triple-colon blocks fold like HTML details and open in PDF', async (
   await pdf.close();
 });
 
+test('multiline inline formulas in list items render in every preview', async () => {
+  const source = String.raw`2. 商函数 $\forall \omega\in \Omega, Z(\omega):=` + '\n' +
+    String.raw`   \begin{cases}` + '\n' +
+    String.raw`   X_2(\omega)/X_1(\omega) & \mbox{ 若 }X_1(\omega)\ne 0\\` + '\n' +
+    String.raw`   0  &  \mbox{ 若 }X_1(\omega)= 0` + '\n' +
+    String.raw`   \end{cases}$.`;
+  for (const mode of ['preview', 'visual', 'pdf']) {
+    const page = await browser.newPage();
+    await page.goto(base + '/?mode=' + mode);
+    await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+    await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+    assert.equal(await page.locator('#documentBody ol > li .math-inline .katex').count(), 1, mode);
+    assert.equal(await page.locator('#documentBody .katex-error').count(), 0, mode);
+    if (mode === 'pdf') {
+      await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+      assert.equal(await page.locator('#printHost ol > li .math-inline > img.print-diagram').count(), 1);
+    }
+    await page.close();
+  }
+});
+
 test('indented display formulas interrupt list paragraphs without blank lines', async () => {
   const source = '2. 计算\n   $$\n   ' + String.raw`\mathbb{E}\left[2^{2X_m}\right]\,,` + '\n   $$\n' +
     '   并证明\n   $$\n   ' + String.raw`\operatorname{Var}\left[\widehat m\right]=\frac{m^2-m}{2}\le\frac{m^2}{2}.` + '\n   $$';
