@@ -183,6 +183,8 @@ md.block.ruler.before('fence', 'admonition', (state, start, end, silent) => {
     token.meta = named ? { kind: match[1].toLowerCase(), title: (match[2] || match[3] || '').trim() } :
       { kind: 'plain', title: suffix || '详情' };
     token.content = state.getLines(start + 1, close, state.blkIndent, false);
+    token.children = [];
+    state.md.block.parse(token.content, state.md, state.env, token.children);
     token.map = [start, close + 1];
   }
   state.line = close + 1;
@@ -193,8 +195,32 @@ md.renderer.rules.admonition = (tokens, i, _options, env) => {
   const icon = kind === 'info' ? '<svg class="admonition-icon" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><path d="M10 9v5M10 5.7v.8" stroke-linecap="round"/></svg>' :
     kind === 'warning' ? '<svg class="admonition-icon" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 2.7a1.2 1.2 0 0 1 2 0l7.2 12.4a1.3 1.3 0 0 1-1.1 1.9H2.9a1.3 1.3 0 0 1-1.1-1.9L9 2.7Z"/><path d="M10 7v4.5M10 14v.3" stroke-linecap="round"/></svg>' : '';
   const className = kind === 'plain' ? '' : ` class="admonition admonition-${kind}"`;
-  return `<details${className}><summary>${icon}${esc(title || admonitionLabels[kind] || kind)}</summary>${md.render(tokens[i].content, env)}</details>`;
+  return `<details${className}><summary>${icon}${esc(title || admonitionLabels[kind] || kind)}</summary>${md.renderer.render(tokens[i].children || [], md.options, env)}</details>`;
 };
+// Parse nested content in document order before footnote_tail creates the one
+// document-wide footnote list. Move nested definitions to the outer token list
+// so references can be shared between foldouts and the rest of the document.
+md.core.ruler.at('inline', state => {
+  const definitions: any[] = [];
+  const parse = (tokens: any[]) => {
+    for (const token of tokens) {
+      if (token.type === 'inline') state.md.inline.parse(token.content, state.md, state.env, token.children);
+      else if (token.type === 'admonition') {
+        parse(token.children || []);
+        let inDefinition = false;
+        token.children = (token.children || []).filter((child: any) => {
+          if (child.type === 'footnote_reference_open') inDefinition = true;
+          if (!inDefinition) return true;
+          definitions.push(child);
+          if (child.type === 'footnote_reference_close') inDefinition = false;
+          return false;
+        });
+      }
+    }
+  };
+  parse(state.tokens);
+  state.tokens.push(...definitions);
+});
 md.renderer.rules.fence = (tokens, i, options, env, self) => {
   if (tokens[i].info.trim().toLowerCase() === 'mermaid') {
     return `<div class="mermaid-source" data-graph="${encodeURIComponent(tokens[i].content)}">正在渲染图表…</div>`;

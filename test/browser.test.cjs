@@ -1019,6 +1019,26 @@ test('info and warning blocks accept titles after a space', async () => {
   await pdf.close();
 });
 
+test('foldouts share one document footnote list without inserting copies', async () => {
+  const source = '正文脚注[^outer]。\n\n:::info 提示\n框内脚注[^inner]。\n\n[^inner]: 框内定义。\n:::\n\n' +
+    ':::warning 注意\n再次引用[^outer]。\n:::\n\n[^outer]: 正文定义。\n';
+  for (const mode of ['preview', 'pdf']) {
+    const page = await browser.newPage();
+    await page.goto(base + '/?mode=' + mode);
+    await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+    await deliver(page, { type: 'document', source, version: 1, settings: {}, exportSettings: {}, templates: [] });
+    if (mode === 'pdf') await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+    const body = page.locator(mode === 'pdf' ? '#printHost' : '#documentBody');
+    assert.equal(await body.locator('details .footnotes').count(), 0, mode);
+    assert.equal(await body.locator('.footnotes').count(), 1, mode);
+    assert.equal(await body.locator('.footnote-item').count(), 2, mode);
+    assert.deepEqual(await body.locator('.footnote-ref').allTextContents(), ['[1]', '[2]', '[1:1]']);
+    assert.match(await body.locator('.footnotes').textContent(), /正文定义。/);
+    assert.match(await body.locator('.footnotes').textContent(), /框内定义。/);
+    await page.close();
+  }
+});
+
 test('plain triple-colon blocks fold like HTML details and open in PDF', async () => {
   const source = '::: 普通标题\n**正文**\n\n```text\n:::info not a nested block\n```\n:::\n\n' +
     ':::Another title\n第二段。\n:::\n\n:::\n默认标题。\n:::\n';
