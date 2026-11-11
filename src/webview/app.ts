@@ -255,7 +255,7 @@ const defaultExportSettings: any = {
   fontSize: 11, lineHeight: 1.5, paragraphGap: 8, template: 'simple', cover: false, toc: false,
   header: '', footer: '', pageNumbers: true, showTags: true, firstLineIndent: 0, align: 'left',
   fontFamily: '', titleFontFamily: '', headingScale: 1,
-  headingGap: 1, pageNumberFormat: 'number',
+  headingGap: 1, pageNumberFormat: 'number', columns: 1,
   codeBackground: '#f4f6f8', tableHeaderBackground: '#eef2f6', tableBorderColor: '#aab4bf',
   coverSubtitle: '', coverAuthor: '', coverDate: true, coverDateText: '',
   coverPositions: { title: [50, 36], subtitle: [50, 47], author: [50, 73], date: [50, 81] }
@@ -267,12 +267,13 @@ function normalizeExportSettings() {
   const ranges: any = {
     marginTop: [0, 60], marginRight: [0, 60], marginBottom: [exportSettings.pageNumbers ? 18 : 0, 60], marginLeft: [0, 60],
     fontSize: [6, 36], lineHeight: [1, 3], paragraphGap: [0, 50],
-    firstLineIndent: [0, 10], headingScale: [0.5, 3], headingGap: [0.2, 3]
+    firstLineIndent: [0, 10], headingScale: [0.5, 3], headingGap: [0.2, 3], columns: [1, 4]
   };
   for (const [key, [min, max]] of Object.entries(ranges) as any) {
     const value = Number(exportSettings[key]);
     exportSettings[key] = Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
   }
+  exportSettings.columns = Math.round(exportSettings.columns);
 }
 let templates: any[] = [];
 let templateImportDraft: { name: string; slots: Record<string, { name: string; url: string }> } | null = null;
@@ -1736,6 +1737,7 @@ function settingsDialog() {
     <div class="template-settings"><strong>模板</strong><div class="template-list">${templateOptions()}</div><button data-action="importTemplate">导入图片模板</button><p>导入后选择有内页的纸张和方向；封面图片可选。应用模板后可在文档预览中框选文字，将模板用于该范围。</p></div>
     <label>纸张<select id="set-paper"><option value="a4">A4</option><option value="a5">A5</option><option value="letter">Letter</option></select></label>
     <label>方向<select id="set-orientation"><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
+    <label>正文分栏<select id="set-columns"><option value="1">单栏</option><option value="2">双栏</option><option value="3">三栏</option><option value="4">四栏</option></select></label>
     <div class="margin-editor"><strong>页边距</strong><label>预设<select id="marginPreset"><option value="wide">宽</option><option value="moderate">适中</option><option value="narrow">窄</option><option value="custom">自定义</option></select></label><p>点击确定左上角，右下角自动对称；拖动可调整，靠近对称位置时自动吸附</p><div id="marginSheet" class="margin-sheet" role="img" aria-label="点击或拖动调整 PDF 正文区域"><div id="marginSelection" class="margin-selection"></div><span id="marginPageNumber" class="margin-page-number">1</span></div><p id="marginText"></p>
       <div class="margin-inputs"><label>上 mm<input id="set-marginTop" type="number" min="0" max="60" step="1"></label><label>右 mm<input id="set-marginRight" type="number" min="0" max="60" step="1"></label><label>下 mm<input id="set-marginBottom" type="number" min="0" max="60" step="1"></label><label>左 mm<input id="set-marginLeft" type="number" min="0" max="60" step="1"></label></div><p id="marginHint"></p></div>
     ${settingField('fontSize','正文字号 pt','number','6')}${settingField('lineHeight','行距','number','1')}
@@ -1755,7 +1757,7 @@ function settingsDialog() {
     <div class="cover-position-settings"><strong>封面文字位置</strong><p>在封面模板上拖动文字；选中文字后也可用方向键微调，按 Shift 每次移动 5%。</p><div id="coverSheet" class="cover-sheet" aria-label="拖动调整封面文字位置">${['title','subtitle','author','date'].map((key, i) => `<div class="cover-drag-field ${key}" data-cover-field="${key}" role="button" tabindex="0" aria-label="拖动${['标题','副标题','作者','日期'][i]}"><span class="cover-drag-label">${['标题','副标题','作者','日期'][i]}</span><span class="cover-drag-value"></span></div>`).join('')}</div></div>
     <label><input id="set-toc" type="checkbox" ${exportSettings.toc ? 'checked' : ''}>自动目录</label>
     </div><div class="dialog-actions"><button data-action="cancelDialog">取消</button><button data-action="saveSettings" class="primary">应用</button></div>`);
-  for (const key of ['paper','orientation','align']) (document.getElementById('set-' + key) as HTMLSelectElement).value = exportSettings[key];
+  for (const key of ['paper','orientation','align','columns']) (document.getElementById('set-' + key) as HTMLSelectElement).value = String(exportSettings[key]);
   updateVariantSelectors();
   updateMarginSheet(); bindMarginSheet(); updateCoverSheet(); bindCoverSheet();
 }
@@ -1958,7 +1960,7 @@ function onClick(event: MouseEvent) {
     }
     exportSettings.template = chosenTemplate;
     Object.assign(exportSettings, marginDraft);
-    for (const key of ['fontSize','lineHeight','paragraphGap','firstLineIndent','headingScale','headingGap']) exportSettings[key] = Number((document.getElementById('set-' + key) as HTMLInputElement).value);
+    for (const key of ['fontSize','lineHeight','paragraphGap','firstLineIndent','headingScale','headingGap','columns']) exportSettings[key] = Number((document.getElementById('set-' + key) as HTMLInputElement).value);
     for (const key of ['pageNumbers','cover','coverDate','toc']) exportSettings[key] = (document.getElementById('set-' + key) as HTMLInputElement).checked;
     exportSettings.coverPositions = Object.fromEntries(['title','subtitle','author','date'].map(key => [key,
       coverDraft![key].map(value => Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 50)]));
@@ -2139,6 +2141,10 @@ function coverBackground(templateId = exportSettings.template, paper = exportSet
 }
 function makePage(number: number, total = 0, cover = false, templateId = exportSettings.template): HTMLElement {
   const [width, height] = paperSize();
+  const columnCount = exportSettings.columns || 1;
+  const gap = columnCount > 1 ? mmToPx(6) : 0;
+  const bodyWidth = mmToPx(width - exportSettings.marginLeft - exportSettings.marginRight);
+  const columnWidth = (bodyWidth - (columnCount - 1) * gap) / columnCount;
   const page = document.createElement('div');
   page.className = 'print-page' + (cover ? ' cover-page' : '');
   if (templateId === 'sjtu-red' || templateId === 'sjtu-blue') page.classList.add(templateId);
@@ -2162,7 +2168,7 @@ function makePage(number: number, total = 0, cover = false, templateId = exportS
   page.style.setProperty('--print-table-border', exportSettings.tableBorderColor || '#aab4bf');
   page.innerHTML = cover ? '<div class="print-cover-content"></div>' :
     `<div class="print-header">${esc(exportSettings.header || '')}</div>
-    <div class="print-content markdown-body"></div>
+    ${Array.from({ length: columnCount }, (_, index) => `<div class="print-content markdown-body" data-column="${index}" style="left:${mmToPx(exportSettings.marginLeft) + index * (columnWidth + gap)}px;width:${columnWidth}px;right:auto"></div>`).join('')}
     <div class="print-footer">${esc(exportSettings.footer || '')}</div>
     <div class="print-page-number">${exportSettings.pageNumbers ? number : ''}</div>`;
   applyChinesePrintFont(page);
@@ -2405,7 +2411,8 @@ async function paginate(revision: number, rebuild = false) {
   if (!page?.querySelector('.print-content')) {
     page = makePage(pages.length + 1, 0, false, currentTemplate); host.append(page); pages.push(page);
   }
-  let content = page.querySelector<HTMLElement>('.print-content')!;
+  let content = [...page.querySelectorAll<HTMLElement>('.print-content')].findLast(column => column.children.length) ||
+    page.querySelector<HTMLElement>('.print-content')!;
   if (!firstPage && exportSettings.showTags && frontMatter.tags.length) content.insertAdjacentHTML('beforeend', tagMarkup(frontMatter.tags));
   if (exportSettings.toc && !firstPage) {
     const toc = document.createElement('div');
@@ -2422,6 +2429,12 @@ async function paginate(revision: number, rebuild = false) {
     host.append(page); pages.push(page);
     content = page.querySelector<HTMLElement>('.print-content')!;
     boundaries.push({ line, page: pages.length, type });
+  };
+  const nextColumn = (line = 0) => {
+    const columns = [...page!.querySelectorAll<HTMLElement>('.print-content')];
+    const next = columns.indexOf(content) + 1;
+    if (next < columns.length) content = columns[next];
+    else nextPage(line);
   };
   const contentHeight = () => content.clientHeight;
   const fitImagesToPage = (element: HTMLElement) => {
@@ -2444,7 +2457,7 @@ async function paginate(revision: number, rebuild = false) {
     const desiredTemplate = templateForBlock(blockIndex);
     if (desiredTemplate !== currentTemplate) {
       currentTemplate = desiredTemplate;
-      if (content.children.length) nextPage(block.line);
+      if (page.querySelector('.print-content > *')) nextPage(block.line);
       else setTemplateArtwork(page, currentTemplate);
     }
     if (/^\s*<!--\s*pagebreak\s*-->\s*$/i.test(block.raw)) {
@@ -2469,7 +2482,7 @@ async function paginate(revision: number, rebuild = false) {
       if (element.querySelector('img') && rows.length <= 1 && !pre) {
         // Keep pictures on one page. A paragraph containing an image must never
         // enter the text fragment path below, which clips cloned DOM by height.
-        if (content.children.length) nextPage(block.line);
+        if (content.children.length) nextColumn(block.line);
         content.append(element);
         fitImagesToPage(element);
         if (content.scrollHeight <= contentHeight() + 2) continue;
@@ -2480,7 +2493,7 @@ async function paginate(revision: number, rebuild = false) {
       }
       const lines = pre?.textContent?.includes('\n') ? pre.textContent.replace(/\n$/, '').split('\n') : [];
       const canFlow = rows.length > 1 || lines.length > 1 || (!table && !pre && !!element.querySelector('p, blockquote, li'));
-      if (content.children.length && !canFlow) nextPage(block.line);
+      if (content.children.length && !canFlow) nextColumn(block.line);
       content.append(element);
       if (content.scrollHeight <= contentHeight() + 2) continue;
       // Rows of an oversized table can continue on a later page with its header.
@@ -2497,10 +2510,10 @@ async function paginate(revision: number, rebuild = false) {
           if (content.scrollHeight > contentHeight() + 2) {
             const currentRows = current.querySelectorAll('tbody tr');
             if (currentRows.length === 1 && content.children.length > 1) {
-              current.remove(); nextPage(block.line); content.append(current);
+              current.remove(); nextColumn(block.line); content.append(current);
             } else if (currentRows.length > 1) {
               currentRows[currentRows.length - 1].remove();
-              nextPage(block.line); current = element.cloneNode(true) as HTMLElement;
+              nextColumn(block.line); current = element.cloneNode(true) as HTMLElement;
               current.querySelector('tbody')!.innerHTML = '';
               current.querySelector('tbody')!.append(row.cloneNode(true));
               content.append(current);
@@ -2524,10 +2537,10 @@ async function paginate(revision: number, rebuild = false) {
           setCodePageLines(current, element, lines, firstLine, lineIndex);
           if (content.scrollHeight > contentHeight() + 2) {
             if (firstLine === lineIndex && content.children.length > 1) {
-              current.remove(); nextPage(block.line); content.append(current);
+              current.remove(); nextColumn(block.line); content.append(current);
             } else if (firstLine < lineIndex) {
               setCodePageLines(current, element, lines, firstLine, lineIndex - 1);
-              nextPage(block.line);
+              nextColumn(block.line);
               current = element.cloneNode(true) as HTMLElement;
               firstLine = lineIndex;
               setCodePageLines(current, element, lines, firstLine, lineIndex);
@@ -2553,13 +2566,13 @@ async function paginate(revision: number, rebuild = false) {
           const occupied = last ? last.getBoundingClientRect().bottom - content.getBoundingClientRect().top : 0;
           const available = contentHeight() - occupied;
           const nextLine = lineBottoms.find(bottom => bottom > offset + 1);
-          if (available < (nextLine ? nextLine - offset + 1 : 1)) { nextPage(block.line); continue; }
+          if (available < (nextLine ? nextLine - offset + 1 : 1)) { nextColumn(block.line); continue; }
           let height = Math.min(available, fullHeight - offset);
           let nextOffset = offset + height;
           if (nextOffset < fullHeight - 1 && lineBottoms.length) {
             const lastLine = lineBottoms.filter(bottom => bottom > offset + 1 && bottom <= nextOffset - 2).at(-1);
             if (!lastLine) {
-              if (content.children.length) { nextPage(block.line); continue; }
+              if (content.children.length) { nextColumn(block.line); continue; }
             } else {
               nextOffset = lastLine >= lineBottoms.at(-1)! - 1 ? fullHeight : lastLine + 1;
               height = Math.min(available, nextOffset - offset);
@@ -2573,7 +2586,7 @@ async function paginate(revision: number, rebuild = false) {
           clone.style.position = 'absolute'; clone.style.top = `-${offset}px`; clone.style.left = '0'; clone.style.width = '100%';
           fragment.append(clone); content.append(fragment);
           offset = nextOffset;
-          if (offset < fullHeight - 1) nextPage(block.line);
+          if (offset < fullHeight - 1) nextColumn(block.line);
         }
       }
     }
@@ -2614,15 +2627,16 @@ function pageContainingBlockOrPrevious(index: number) {
   return 0;
 }
 function pageGeometry(page: HTMLElement) {
-  const content = page.querySelector<HTMLElement>('.print-content');
-  if (!content) return '';
-  const top = content.getBoundingClientRect().top;
   return JSON.stringify([page.className, page.style.backgroundImage,
-    [...content.children].map((part: Element) => {
-      const element = part as HTMLElement;
-      const rect = element.getBoundingClientRect();
-      return [element.dataset.blockIndex, element.className, Math.round(rect.top - top), Math.round(rect.height),
-        element.classList.contains('print-fragment') ? (element.firstElementChild as HTMLElement)?.style.top : ''];
+    [...page.querySelectorAll<HTMLElement>('.print-content')].map(content => {
+      const rect = content.getBoundingClientRect();
+      return [Math.round(rect.left - page.getBoundingClientRect().left), Math.round(rect.width),
+        [...content.children].map((part: Element) => {
+          const element = part as HTMLElement;
+          const childRect = element.getBoundingClientRect();
+          return [element.dataset.blockIndex, element.className, Math.round(childRect.top - rect.top), Math.round(childRect.height),
+            element.classList.contains('print-fragment') ? (element.firstElementChild as HTMLElement)?.style.top : ''];
+        })];
     })]);
 }
 function changedTextPage(index: number): number | null {

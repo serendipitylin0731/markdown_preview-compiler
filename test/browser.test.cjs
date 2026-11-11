@@ -1438,6 +1438,55 @@ test('pagination stays live with PDF auto update off and preserves earlier pages
   await page.close();
 });
 
+test('PDF flows through up to four columns before creating another page', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  const source = Array.from({ length: 48 }, (_, index) => `段落 ${index + 1}：` + '分栏正文按顺序排版。'.repeat(10)).join('\n\n');
+  await deliver(page, { type: 'document', source, version: 1, settings: { autoUpdate: true },
+    exportSettings: { columns: 4, fontSize: 9 }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  const layout = await page.locator('#printHost .print-page').evaluateAll(pages => pages.map(paper =>
+    [...paper.querySelectorAll('.print-content')].map(column => ({
+      text: column.textContent, left: column.getBoundingClientRect().left,
+      width: column.getBoundingClientRect().width, height: column.clientHeight, scrollHeight: column.scrollHeight
+    }))));
+  assert.ok(layout.length > 1, 'content should continue after filling four columns');
+  assert.ok(layout.every(columns => columns.length === 4));
+  assert.ok(layout[0].every(column => column.text.length > 0));
+  for (const columns of layout) for (let index = 1; index < columns.length; index++)
+    assert.ok(columns[index].left >= columns[index - 1].left + columns[index - 1].width + 15);
+  assert.ok(layout.flat().every(column => column.scrollHeight <= column.height + 3));
+  await page.locator('button[data-action=settings]').click();
+  assert.equal(await page.locator('#set-columns').inputValue(), '4');
+  await page.locator('#set-columns').selectOption('2');
+  await page.locator('button[data-action=saveSettings]').click();
+  assert.equal((await page.evaluate(() => window.__MDC_MESSAGES__.findLast(m => m.type === 'saveSettings')?.value)).columns, 2);
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
+    document.querySelectorAll('#printHost .print-page:first-child .print-content').length === 2, { timeout: 30000 });
+  await page.evaluate(() => { window.__COLUMN_FIRST_CANVAS__ = document.querySelector('#pdfPages .pdf-page-slot canvas'); });
+  await deliver(page, { type: 'documentChanged', source: source.replace('段落 48：', '最后一段 48：'), version: 2 });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新') &&
+    document.querySelector('#printHost .print-page:last-child')?.textContent?.includes('最后一段 48'), { timeout: 30000 });
+  assert.equal(await page.evaluate(() => window.__COLUMN_FIRST_CANVAS__ ===
+    document.querySelector('#pdfPages .pdf-page-slot canvas')), true, 'earlier page image should be retained');
+  await page.close();
+});
+
+test('a manual break starts a new page even when columns remain empty', async () => {
+  const page = await browser.newPage();
+  await page.goto(base + '/?mode=pdf');
+  await page.waitForFunction(() => window.__MDC_MESSAGES__?.some(m => m.type === 'ready'));
+  await deliver(page, { type: 'document', source: '第一段。\n\n<!-- pagebreak -->\n\n第二段。', version: 1,
+    settings: { autoUpdate: true }, exportSettings: { columns: 3 }, templates: [] });
+  await page.waitForFunction(() => document.getElementById('pdfStatus')?.textContent?.includes('PDF 已更新'), { timeout: 30000 });
+  assert.equal(await page.locator('#printHost .print-page').count(), 2);
+  assert.match(await page.locator('#printHost .print-page').nth(0).textContent(), /第一段/);
+  assert.doesNotMatch(await page.locator('#printHost .print-page').nth(0).textContent(), /第二段/);
+  assert.match(await page.locator('#printHost .print-page').nth(1).textContent(), /第二段/);
+  await page.close();
+});
+
 test('an edit on page five keeps the scroll position and reveals each regenerated page in place', async () => {
   const page = await browser.newPage();
   await page.goto(base + '/?mode=pdf');
